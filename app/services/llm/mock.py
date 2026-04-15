@@ -62,19 +62,50 @@ class MockLLMProvider(LLMProvider):
         return SummaryResult(summary=recent[:600] or "No conversation summary available yet.")
 
     def analyze_attachment(self, attachment_type: str, mime_type: str, data: bytes) -> AttachmentInsight:
-        summary = f"{attachment_type} attachment received ({mime_type}, {len(data)} bytes)."
-        transcript = "Audio transcription is not available in mock mode." if attachment_type == "audio" else None
-        extracted_text = "Image understanding is not available in mock mode." if attachment_type == "image" else None
+        digest = hashlib.sha256(data).hexdigest()[:16]
+        summary = f"{attachment_type} attachment received ({mime_type}, {len(data)} bytes, fingerprint {digest})."
+        transcript = None
+        translated_text = None
+        detected_language = None
+        analysis_confidence = None
+        needs_clarification = False
+        clarification_reason = None
+        if attachment_type == "audio":
+            if data.startswith(b"NOISY"):
+                summary = "Audio attachment seems too noisy to understand clearly."
+                analysis_confidence = 0.2
+                needs_clarification = True
+                clarification_reason = "Audio was too noisy in mock mode."
+            else:
+                transcript = f"Mock audio transcript {digest}"
+                translated_text = transcript
+                detected_language = "bn-BD"
+                analysis_confidence = 0.92
+        extracted_text = digest if attachment_type == "image" else None
         return AttachmentInsight(
             attachment_id=0,
             attachment_type=attachment_type,
             summary=summary,
             transcript=transcript,
+            translated_text=translated_text,
             extracted_text=extracted_text,
+            detected_language=detected_language,
+            analysis_confidence=analysis_confidence,
+            needs_clarification=needs_clarification,
+            clarification_reason=clarification_reason,
         )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         return [self._hashed_vector(text) for text in texts]
+
+    def embed_image(self, image_data: bytes) -> list[float]:
+        """Mock image embedding - returns a simple hash-based vector"""
+        import hashlib
+        digest = hashlib.sha256(image_data).digest()
+        vector = [0.0] * 24
+        for index in range(len(vector)):
+            vector[index] = ((digest[index] / 255.0) - 0.5)
+        return vector
 
     def _hashed_vector(self, text: str) -> list[float]:
         tokens = Counter(word.strip(".,!?").lower() for word in text.split() if word.strip())

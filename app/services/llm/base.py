@@ -21,7 +21,12 @@ class AttachmentInsight:
     attachment_type: str
     summary: str
     transcript: str | None = None
+    translated_text: str | None = None
     extracted_text: str | None = None
+    detected_language: str | None = None
+    analysis_confidence: float | None = None
+    needs_clarification: bool = False
+    clarification_reason: str | None = None
 
 
 @dataclass
@@ -103,3 +108,17 @@ class LLMProvider(ABC):
     @abstractmethod
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError
+
+    @abstractmethod
+    def embed_image(self, image_data: bytes) -> list[float]:
+        """Create embedding (fingerprint) of an image"""
+        raise NotImplementedError
+
+    def match_product_candidates(
+        self,
+        mime_type: str,
+        data: bytes,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Optional second-pass visual reranking for product matches."""
+        return None

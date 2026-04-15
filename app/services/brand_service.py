@@ -18,7 +18,7 @@ def create_brand(db: Session, payload: dict) -> tuple[models.Brand, str]:
         name=payload["name"],
         slug=payload["slug"],
         description=payload.get("description"),
-        default_language=payload.get("default_language", "en"),
+        default_language=payload.get("default_language", "bn-BD"),
         tone_name=payload.get("tone_name", "Helpful sales assistant"),
         tone_instructions=payload.get("tone_instructions", ""),
         fallback_handoff_message=payload.get(

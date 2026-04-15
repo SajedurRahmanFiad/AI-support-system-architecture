@@ -15,7 +15,10 @@ class AttachmentOut(BaseModel):
     original_filename: str | None
     storage_path: str
     transcript: str | None
+    translated_text: str | None
     extracted_text: str | None
+    detected_language: str | None
+    analysis_confidence: float | None
     metadata_json: dict[str, Any] | None
     created_at: datetime
 

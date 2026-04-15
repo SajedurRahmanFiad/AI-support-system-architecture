@@ -1,1261 +1,990 @@
-# B2B AI Support API with RAG
+# B2B AI Support API
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.116+-green.svg)](https://fastapi.tiangolo.com/)
+This project is a multi-business AI customer support API.
 
-A production-ready **AI-powered customer support API** with Retrieval-Augmented Generation (RAG) for multi-tenant businesses. Built for cPanel deployment with intelligent conversation management, knowledge base integration, and human handoff capabilities.
+It is built so one central API can serve many businesses, while each business keeps its own:
 
-## 🚀 Quick Start
+- knowledge
+- tone
+- style examples
+- customer history
+- product image catalog
+- rules and handoff settings
 
-```bash
-# Clone and setup
-git clone <your-repo-url>
-cd b2b-ai-chatbot-api-with-rag
+The app is API-first. That means this repo gives you the main backend system only. You can later connect it to Facebook, WordPress, Shopify, a custom dashboard, or anything else through wrappers.
+
+This version is prepared for:
+
+- `cPanel` deployment
+- `MariaDB` or MySQL
+- `Gemini` for low-cost testing
+- easy future switching to another LLM provider
+- Bangladeshi customer support with Bangla-first behavior
+
+## What this app can do now
+
+- receive customer messages through one API
+- keep each business fully separate from every other business
+- store customer profiles, facts, summaries, and conversation history
+- search a business knowledge base and use that information in replies
+- use brand-specific tone rules and reply examples
+- understand customer images
+- transcribe customer voice notes
+- ask for clarification when audio is too unclear
+- recognize products from uploaded product images
+- save feedback and handoff decisions
+- process heavy work in background jobs
+- run on cPanel without Redis, Docker, or Kubernetes
+
+## What "training" means in this app
+
+People often use the word "training" for a few different things. In this app, there are 5 practical types of customization:
+
+### 1. Knowledge training
+
+You give the system business facts as documents.
+
+Examples:
+
+- product details
+- pricing
+- delivery areas
+- return policy
+- payment rules
+- size guides
+- FAQ answers
+
+The app breaks those documents into smaller pieces, stores them, and searches them when a customer asks something relevant.
+
+This is the main way to teach the AI business information.
+
+### 2. Style training
+
+You give the system examples of how the brand should talk.
+
+Examples:
+
+- how to greet customers
+- how to answer product questions
+- how to reply when something is out of stock
+- how to apologize
+- how to hand off to a human
+
+This does not change the model weights. It changes behavior by giving the AI high-quality examples and brand rules at runtime.
+
+This is the safest and cheapest way to shape tone.
+
+### 3. Product image training
+
+You upload reference images of products.
+
+The app does not "fine-tune" the LLM on those images. Instead, it:
+
+- studies the product images
+- saves a visual fingerprint
+- stores the product metadata
+- matches future customer photos against that catalog
+
+This is the right approach for ecommerce support. It is faster and safer than trying to retrain a model every time products change.
+
+### 4. Customer memory
+
+Each customer can have:
+
+- name
+- language
+- city
+- profile data
+- facts learned from earlier chats
+- short summary of past conversations
+
+This is how the app remembers people separately.
+
+### 5. Conversation memory
+
+The app keeps recent messages and also creates short summaries over time.
+
+This helps the AI reply like it remembers the ongoing conversation instead of acting like each message is brand new.
+
+## What this app does not do
+
+- it does not include Facebook or WordPress wrappers yet
+- it does not do true model fine-tuning inside this repo
+- it does not do live phone calls or real-time call center streaming
+- it does not include a web admin panel yet
+- it does not clean noisy audio with tools like `ffmpeg` yet
+
+Those can be added later, but the API core is already in place.
+
+## Best way to think about the system
+
+- the model learns "how to talk" from style examples and tone rules
+- the model learns "what this business knows" from knowledge documents
+- the system learns "who this customer is" from customer memory
+- the product matcher learns "what product this photo looks like" from product images
+
+That combination is usually much better than trying to fine-tune everything into one model.
+
+## Production recommendation
+
+For testing:
+
+- use `Gemini`
+
+For production voice transcription:
+
+- keep Gemini for replies
+- use `Google Cloud Speech-to-Text` for voice notes when possible
+
+Why:
+
+- Gemini is fine for testing and demos
+- dedicated speech-to-text is usually more stable for real customer voice notes
+- Bangladesh voice notes are often noisy, mixed-language, and low-quality
+
+## Bangla and Bangladesh support
+
+This app has been adjusted so Bangladesh is the default path:
+
+- default brand language is `bn-BD`
+- default timezone is `Asia/Dhaka`
+- the reply prompt pushes Bangla-first behavior
+- mixed Bangla-English messages are handled more naturally
+- unclear audio can trigger a Bangla clarification reply
+
+Important note:
+
+- Gemini can help with Bangla voice understanding
+- for real production traffic, `google_cloud` speech is the safer upgrade for voice notes
+
+## How the app works
+
+When a customer message comes in, the app does this:
+
+1. checks which brand the message belongs to
+2. loads that brand's rules, tone, and style examples
+3. loads that customer's memory and recent chat history
+4. reads any uploaded image, audio, or file attachments
+5. transcribes audio if needed
+6. recognizes products from images if possible
+7. searches the knowledge base
+8. asks the LLM to build a reply
+9. checks whether the reply is safe enough to send
+10. either sends a reply, asks for clarification, or hands off to a human
+11. saves the result for future memory and review
+
+## Why this scales
+
+The app is built to grow without rewriting the whole system:
+
+- one API server can serve many brands
+- heavy tasks can be queued as jobs
+- the job worker is database-backed, so it works on cPanel
+- the LLM layer is abstracted, so you can switch providers later
+- uploads are stored separately from database records
+- business data is isolated by `brand_id`
+
+This means you can start small and scale later.
+
+## Tech stack
+
+- `FastAPI` for the API
+- `SQLAlchemy` for database access
+- `MariaDB` or MySQL for production data
+- `Gemini` for LLM replies and testing
+- optional `Google Cloud Speech-to-Text` for better voice transcription
+- `Passenger` on cPanel for deployment
+
+## Project structure
+
+```text
+app/
+  api/
+    routes/            API endpoints
+    schemas/           request and response models
+  services/
+    llm/               provider layer
+    knowledge.py       knowledge indexing and search
+    memory.py          customer and conversation memory
+    moderation.py      safety and handoff checks
+    orchestrator.py    main message flow
+    product_recognition.py
+    speech.py
+    jobs.py
+    storage.py
+  config.py
+  database.py
+  models.py
+  main.py
+
+main.py                local dev entry point
+passenger_wsgi.py      cPanel entry point
+requirements.txt
+```
+
+## Database choice
+
+Since you want cPanel, `MariaDB` is a good choice here.
+
+Use a database URL like this:
+
+```env
+DATABASE_URL=mysql+pymysql://db_user:db_password@localhost:3306/db_name?charset=utf8mb4
+```
+
+Use `utf8mb4`. That helps with Bangla and mixed-language text.
+
+## Main authentication headers
+
+The app uses two header types:
+
+- `X-Platform-Token`
+  Use this for platform-level admin tasks like creating brands or uploading knowledge.
+- `X-Brand-Api-Key`
+  Use this for normal brand-level operations like processing messages and uploading customer attachments.
+
+## Important API routes
+
+Base prefix:
+
+```text
+/api
+```
+
+Core routes:
+
+- `GET /api/health`
+- `POST /api/v1/brands`
+- `GET /api/v1/brands`
+- `PATCH /api/v1/brands/{brand_id}`
+- `POST /api/v1/brands/{brand_id}/rules`
+- `POST /api/v1/brands/{brand_id}/style-examples`
+- `POST /api/v1/knowledge/documents`
+- `POST /api/v1/knowledge/search`
+- `POST /api/v1/uploads`
+- `POST /api/v1/messages/process`
+- `POST /api/v1/messages/{message_id}/feedback`
+- `GET /api/v1/customers`
+- `GET /api/v1/customers/{customer_id}`
+- `GET /api/v1/conversations`
+- `GET /api/v1/conversations/{conversation_id}`
+- `POST /api/v1/conversations/{conversation_id}/handoff`
+- `POST /api/v1/conversations/{conversation_id}/release`
+- `POST /api/v1/products/images/add`
+- `POST /api/v1/products/recognize`
+- `GET /api/v1/products/images`
+- `DELETE /api/v1/products/images/{product_image_id}`
+- `GET /api/v1/jobs`
+- `POST /api/v1/jobs/process-pending`
+
+## Local quick start
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate  # Windows
+.venv\Scripts\activate
 pip install -r requirements.txt
-
-# Setup database
+copy .env.example .env
 python -m app.cli init-db
-python -m app.cli create-brand --name "My Company" --slug my-company
-
-# Start server
+python -m app.cli create-brand --name "Demo Brand" --slug demo-brand
 python main.py
 ```
 
-Visit [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for interactive API documentation.
+Swagger docs:
 
-## 📋 Table of Contents
+- `http://127.0.0.1:8000/docs`
 
-- [Features](#-features)
-- [How It Works](#-how-it-works)
-- [Architecture](#-architecture)
-- [Installation](#-installation)
-- [Configuration](#-configuration)
-- [Usage Guide](#-usage-guide)
-- [API Reference](#-api-reference)
-- [Knowledge Base Setup](#-knowledge-base-setup)
-- [Multi-Tenant Management](#-multi-tenant-management)
-- [Deployment](#-deployment)
-- [Development](#-development)
-- [Troubleshooting](#-troubleshooting)
-- [Contributing](#-contributing)
-- [License](#-license)
+## Environment variables
 
-## ✨ Features
+These are the most important settings in `.env`.
 
-### 🤖 AI-Powered Support
-- **Intelligent Responses**: Context-aware replies using RAG technology
-- **Multi-Provider LLM**: Gemini AI with extensible provider system
-- **Conversation Memory**: Remembers customer history and preferences
-- **Smart Handoffs**: Automatically routes complex issues to human agents
+| Variable | What it means in simple words | Example |
+|---|---|---|
+| `APP_NAME` | App name shown in API docs | `B2B AI Support API` |
+| `APP_ENV` | Current environment | `production` |
+| `DEBUG` | Turn debug on or off | `false` |
+| `DATABASE_URL` | Where the app database lives | `mysql+pymysql://...` |
+| `PLATFORM_API_TOKEN` | Secret admin token for platform-level actions | `change-this-now` |
+| `LLM_PROVIDER` | Which LLM provider to use right now | `gemini` |
+| `GEMINI_API_KEY` | Your Gemini API key | `your-key` |
+| `GEMINI_MODEL` | Main Gemini model for replies | `gemini-2.5-flash` |
+| `GEMINI_SUMMARY_MODEL` | Gemini model for summaries | `gemini-2.5-flash` |
+| `GEMINI_EMBEDDING_MODEL` | Embedding model for knowledge and stronger image matching | `gemini-embedding-2-preview` |
+| `SPEECH_PROVIDER` | Voice transcription provider | `gemini` or `google_cloud` |
+| `GOOGLE_CLOUD_PROJECT_ID` | Your Google Cloud project id for speech | `my-project-id` |
+| `GOOGLE_APPLICATION_CREDENTIALS` | Path to your Google service account JSON file if using Google Cloud speech | `/home/username/keys/google.json` |
+| `SPEECH_PRIMARY_LANGUAGE` | Main expected voice language | `bn-BD` |
+| `SPEECH_ALT_LANGUAGES` | Extra languages that may appear in voice notes | `bn-BD,en-US,en-GB,hi-IN` |
+| `SPEECH_LOW_CONFIDENCE_THRESHOLD` | If voice confidence falls below this, ask for clarification | `0.65` |
+| `GEMINI_INLINE_AUDIO_MAX_BYTES` | Max audio size to send inline before using Gemini file upload | `8000000` |
+| `FORCE_BANGLA_REPLY_BY_DEFAULT` | Push Bangla replies unless the customer clearly prefers English | `true` |
+| `UNCLEAR_AUDIO_REPLY_BN` | Bangla message sent when audio is unclear | your custom Bangla text |
+| `UNCLEAR_AUDIO_REPLY_EN` | English version of the unclear-audio message | your custom English text |
+| `KNOWLEDGE_SCAN_LIMIT` | How many knowledge chunks to scan | `400` |
+| `KNOWLEDGE_TOP_K` | How many best knowledge chunks to use | `5` |
+| `HANDOFF_CONFIDENCE_THRESHOLD` | If reply confidence falls below this, handoff becomes more likely | `0.55` |
+| `UPLOAD_DIR` | Where uploaded files are stored | `storage/uploads` |
+| `MAX_UPLOAD_BYTES` | Max upload size per file | `20000000` |
+| `ALLOWED_ORIGINS` | CORS allow list | `*` |
+| `DEFAULT_TIMEZONE` | Default timezone for app behavior | `Asia/Dhaka` |
 
-### 🏢 Multi-Tenant Architecture
-- **Brand Isolation**: Each business has separate API keys and knowledge bases
-- **Customizable Personality**: Brand-specific tone, rules, and response styles
-- **Independent Scaling**: Businesses don't interfere with each other
+## Recommended `.env` for cPanel production
 
-### 📚 Knowledge Management
-- **Document Chunking**: Large documents automatically split for efficient search
-- **Semantic Search**: AI-powered retrieval finds relevant information
-- **Multiple Formats**: Support for text, PDFs, and structured data
-- **Real-time Updates**: Knowledge base updates without restarting
+This is a safe starting point:
 
-### 🔄 Async Processing
-- **Background Jobs**: Heavy operations run asynchronously
-- **Queue Management**: Database-backed job system for cPanel compatibility
-- **Progress Tracking**: Monitor job status and results
+```env
+APP_NAME=B2B AI Support API
+APP_ENV=production
+DEBUG=false
+DATABASE_URL=mysql+pymysql://cpaneluser_dbuser:YOUR_PASSWORD@localhost:3306/cpaneluser_dbname?charset=utf8mb4
+PLATFORM_API_TOKEN=replace-this-with-a-long-random-secret
 
-### 📎 Rich Media Support
-- **File Attachments**: Images, audio, and documents
-- **AI Analysis**: Automatic transcription and content extraction
-- **Secure Storage**: Local filesystem with provider abstraction
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=replace-with-your-gemini-key
+GEMINI_MODEL=gemini-2.5-flash
+GEMINI_SUMMARY_MODEL=gemini-2.5-flash
+GEMINI_EMBEDDING_MODEL=gemini-embedding-2-preview
 
-### 🛡️ Enterprise-Ready
-- **Audit Logging**: Complete request/response tracking
-- **Moderation Rules**: Configurable content filtering
-- **Feedback Loop**: Human corrections improve AI responses
-- **Rate Limiting**: Built-in protection against abuse
+SPEECH_PROVIDER=gemini
+GOOGLE_CLOUD_PROJECT_ID=
+GOOGLE_APPLICATION_CREDENTIALS=
+SPEECH_PRIMARY_LANGUAGE=bn-BD
+SPEECH_ALT_LANGUAGES=bn-BD,en-US,en-GB,hi-IN
+SPEECH_LOW_CONFIDENCE_THRESHOLD=0.65
+GEMINI_INLINE_AUDIO_MAX_BYTES=8000000
 
-## 🔍 How It Works
+FORCE_BANGLA_REPLY_BY_DEFAULT=true
+UNCLEAR_AUDIO_REPLY_BN=দুঃখিত, ভয়েস মেসেজটি পরিষ্কারভাবে বুঝতে পারিনি। দয়া করে ছোট করে আবার ভয়েস দিন, অথবা একটি টেক্সট মেসেজ পাঠান।
+UNCLEAR_AUDIO_REPLY_EN=Sorry, I could not understand the voice note clearly. Please send a shorter voice note or a text message.
 
-### Core Flow
-
-```mermaid
-graph TD
-    A[Customer Message] --> B[Authentication Check]
-    B --> C[Customer Profile Lookup]
-    C --> D[Knowledge Base Search]
-    D --> E[Moderation Check]
-    E --> F{Confidence Check}
-    F -->|High| G[Generate AI Reply]
-    F -->|Low| H[Human Handoff]
-    G --> I[Send Response]
-    H --> I
-    I --> J[Update Conversation]
-    J --> K[Log Audit Trail]
+KNOWLEDGE_SCAN_LIMIT=400
+KNOWLEDGE_TOP_K=5
+HANDOFF_CONFIDENCE_THRESHOLD=0.55
+UPLOAD_DIR=storage/uploads
+MAX_UPLOAD_BYTES=20000000
+ALLOWED_ORIGINS=*
+DEFAULT_TIMEZONE=Asia/Dhaka
 ```
 
-### AI Decision Process
+If you later upgrade voice transcription to Google Cloud:
 
-1. **Input Analysis**: Customer message + conversation history + attachments
-2. **Knowledge Retrieval**: Semantic search through uploaded documents
-3. **Context Building**: Customer profile + brand personality + safety rules
-4. **Response Generation**: AI crafts reply using all context
-5. **Quality Check**: Confidence scoring and moderation review
-6. **Action Selection**: Send reply, ask clarification, or handoff to human
-
-### Key Components
-
-- **Orchestrator**: Main processing pipeline coordinator
-- **LLM Provider**: AI model interface (Gemini/OpenAI/etc.)
-- **Knowledge Service**: Document indexing and retrieval
-- **Memory Service**: Customer profiling and summarization
-- **Moderation Service**: Content safety and handoff triggers
-
-## 🏗️ Architecture
-
-```
-├── app/
-│   ├── api/              # FastAPI routes and schemas
-│   ├── services/         # Business logic
-│   │   ├── llm/         # AI provider implementations
-│   │   ├── knowledge/   # RAG and search
-│   │   ├── memory/      # Customer profiling
-│   │   └── orchestrator/# Main processing pipeline
-│   ├── models.py        # SQLAlchemy database models
-│   ├── database.py      # Database connection
-│   ├── config.py        # Settings management
-│   └── main.py          # FastAPI application
-├── storage/             # File uploads
-├── tests/              # Test suite
-├── main.py            # Server entry point
-├── passenger_wsgi.py  # cPanel deployment
-└── requirements.txt   # Dependencies
+```env
+SPEECH_PROVIDER=google_cloud
+GOOGLE_CLOUD_PROJECT_ID=your-project-id
+GOOGLE_APPLICATION_CREDENTIALS=/home/yourcpaneluser/keys/google-service-account.json
 ```
 
-### Database Schema
+## How to teach the app properly
 
-- **brands**: Business entities with customization settings
-- **customers**: Customer profiles with facts and summaries
-- **conversations**: Chat sessions with ownership tracking
-- **messages**: Individual messages with AI metadata
-- **knowledge_documents**: Uploaded knowledge base content
-- **knowledge_chunks**: Chunked documents for efficient search
-- **attachments**: File uploads with AI analysis
-- **jobs**: Async task queue
-- **audit_logs**: Complete activity tracking
+### A. Teach business facts with knowledge documents
 
-## 📦 Installation
+Send documents using:
 
-### Prerequisites
+- `POST /api/v1/knowledge/documents`
 
-- **Python 3.10+**
-- **MySQL/MariaDB** (production) or **SQLite** (development)
-- **Git**
+Good document topics:
 
-### Local Development Setup
+- product catalog
+- delivery policy
+- return policy
+- payment rules
+- store hours
+- courier information
+- size guide
+- FAQ
+
+Best practice:
+
+- keep one topic per document
+- write plain facts
+- avoid long marketing paragraphs
+- update old pricing quickly
+- use exact names, sizes, colors, locations, and conditions
+
+### B. Teach tone with style examples
+
+Send examples using:
+
+- `POST /api/v1/brands/{brand_id}/style-examples`
+
+Good examples:
+
+- greeting message
+- out-of-stock reply
+- discount refusal
+- apology message
+- order delay reply
+- handoff reply
+
+Best practice:
+
+- use real approved human replies
+- keep examples short and realistic
+- do not train on bad or emotional replies
+
+### C. Teach hard rules
+
+Send rules using:
+
+- `POST /api/v1/brands/{brand_id}/rules`
+
+Examples:
+
+- never promise delivery outside listed zones
+- never confirm refunds automatically
+- hand off when customer threatens legal action
+- do not offer discounts above a limit
+
+### D. Teach product recognition with images
+
+Upload product images using:
+
+- `POST /api/v1/products/images/add`
+
+Best practice:
+
+- upload `3` to `5` clear images per product
+- use different angles
+- include front, side, detail shots if useful
+- include metadata like SKU, color, size, and model
+- avoid blurry reference photos
+
+Very important:
+
+- this is not LLM fine-tuning
+- this is a product image matching system
+
+That is the correct design for changing product catalogs.
+
+### E. Let customer memory grow over time
+
+The app can store useful customer details such as:
+
+- preferred language
+- favorite category
+- city
+- past complaints
+- order interest
+
+This happens through conversation updates and summaries.
+
+## Simple usage examples
+
+### 1. Create a brand
+
+```powershell
+python -m app.cli create-brand --name "My Shop" --slug my-shop
+```
+
+Save the printed API key. That key belongs to that business.
+
+### 2. Add a knowledge document
 
 ```bash
-# 1. Clone repository
-git clone <your-repo-url>
-cd b2b-ai-chatbot-api-with-rag
-
-# 2. Create virtual environment
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # macOS/Linux
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Setup environment
-copy .env.example .env  # Windows
-# cp .env.example .env   # macOS/Linux
-
-# 5. Configure database
-# Edit .env DATABASE_URL for your setup
-
-# 6. Initialize database
-python -m app.cli init-db
-
-# 7. Create your first brand
-python -m app.cli create-brand --name "Demo Company" --slug demo-company
-
-# 8. Start development server
-python main.py
-```
-
-### Docker Setup (Optional)
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-RUN python -m app.cli init-db
-
-EXPOSE 8000
-CMD ["python", "main.py"]
-```
-
-## ⚙️ Configuration
-
-### Environment Variables
-
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `APP_NAME` | Application name | B2B AI Support API | No |
-| `DEBUG` | Debug mode | false | No |
-| `DATABASE_URL` | Database connection string | sqlite:///./local.db | Yes |
-| `PLATFORM_API_TOKEN` | Admin API token | change-this-token | Yes |
-| `LLM_PROVIDER` | AI provider (gemini/mock) | gemini | No |
-| `GEMINI_API_KEY` | Gemini API key | - | Yes (if using Gemini) |
-| `KNOWLEDGE_TOP_K` | Search results limit | 5 | No |
-| `HANDOFF_CONFIDENCE_THRESHOLD` | AI confidence threshold | 0.55 | No |
-
-### Database URLs
-
-```bash
-# SQLite (development)
-DATABASE_URL=sqlite+pysqlite:///./local.db
-
-# MySQL/MariaDB (production)
-DATABASE_URL=mysql+pymysql://user:pass@localhost:3306/db_name?charset=utf8mb4
-
-# PostgreSQL (alternative)
-DATABASE_URL=postgresql://user:pass@localhost:5432/db_name
-```
-
-## 📖 Usage Guide
-
-### Basic Message Processing
-
-```bash
-# Process a customer message
-curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
-  -H "X-Brand-Api-Key: your-brand-api-key" \
+curl -X POST http://127.0.0.1:8000/api/v1/knowledge/documents \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
     "brand_id": 1,
-    "customer_external_id": "customer-123",
-    "conversation_external_id": "conv-456",
-    "text": "How long does shipping take?",
-    "channel": "web"
+    "title": "Delivery Policy",
+    "source_type": "policy",
+    "raw_text": "Inside Dhaka delivery takes 1-2 days. Outside Dhaka delivery takes 2-4 days."
   }'
 ```
 
-**Response:**
+### 3. Upload a customer attachment
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/uploads \
+  -H "X-Brand-Api-Key: YOUR_BRAND_API_KEY" \
+  -F "brand_id=1" \
+  -F "file=@voice-note.ogg"
+```
+
+### 4. Process a message
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
+  -H "X-Brand-Api-Key: YOUR_BRAND_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "brand_id": 1,
+    "customer_external_id": "fb-user-123",
+    "customer_name": "Rahim",
+    "conversation_external_id": "conv-1001",
+    "channel": "facebook",
+    "text": "ডেলিভারি কত দিনে হবে?",
+    "attachment_ids": []
+  }'
+```
+
+### 5. Add a product image for recognition
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/products/images/add \
+  -H "X-Brand-Api-Key: YOUR_BRAND_API_KEY" \
+  -F "brand_id=1" \
+  -F "product_name=Blue Panjabi" \
+  -F "category=clothing" \
+  -F "metadata={\"sku\":\"P-100\",\"color\":\"blue\",\"size\":\"M,L,XL\"}" \
+  -F "file=@panjabi-front.jpg"
+```
+
+### 6. Recognize a product from a customer image
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/products/recognize \
+  -H "X-Brand-Api-Key: YOUR_BRAND_API_KEY" \
+  -F "brand_id=1" \
+  -F "customer_text=Do you have this in black?" \
+  -F "file=@customer-photo.jpg"
+```
+
+## Voice-note limitations and smooth-workflow plan
+
+### Current realistic limits
+
+- very noisy voice notes can still fail
+- very long voice notes will be slower
+- mixed Bangla-English works better than rare dialect-heavy speech
+- if the customer sends unsupported or strange audio formats, results may vary
+- Gemini voice understanding is okay for testing, but not the strongest production speech path
+
+### How the app already helps
+
+- it stores transcript, language, summary, and confidence
+- it asks for clarification when audio is not reliable enough
+- it tries to preserve original spoken language
+- it can keep a Bangla-first customer experience
+
+### Best production upgrade
+
+For voice notes at scale:
+
+- set `SPEECH_PROVIDER=google_cloud`
+- add Google Cloud credentials
+- keep Gemini for reply generation
+
+That combination is usually smoother.
+
+## Heavy traffic and scaling
+
+If many customers message at once, the app can still work because:
+
+- messages can be queued with `process_async=true`
+- jobs are stored in the database
+- you can run the job processor repeatedly through cron
+- the API stays simpler and lighter
+
+On cPanel, the common pattern is:
+
+1. incoming request saves the work
+2. background job processes heavy work
+3. cron keeps the queue moving
+
+That is the cPanel-friendly version of scaling.
+
+## Production checklist
+
+Do these before going live:
+
+- set `APP_ENV=production`
+- set `DEBUG=false`
+- replace the default `PLATFORM_API_TOKEN`
+- use a strong Gemini key
+- use a real MariaDB database
+- make sure `storage/uploads` is writable
+- create at least one brand
+- upload real knowledge documents
+- add brand rules
+- add style examples
+- add product images
+- run `python -m app.cli doctor`
+- test voice notes
+- test image messages
+- set up cron for jobs
+
+## Exact cPanel deployment guide for beginners
+
+This section is written for someone who is new to cPanel.
+
+### Before you start
+
+You need:
+
+- a cPanel hosting account with Python app support
+- Git access in cPanel
+- MariaDB or MySQL access in cPanel
+- your project pushed to GitHub or another Git remote
+
+If you do not see `Application Manager` or `Setup Python App` in cPanel, ask your hosting company to enable Python Passenger apps first. cPanel's own docs note that the Application Manager feature may require your provider to enable it.
+
+### Step 1. Push this project to Git
+
+Put this project in a Git repository first.
+
+Example:
+
+```powershell
+git add .
+git commit -m "Prepare production deployment"
+git push origin main
+```
+
+Do not upload your local `.env` file to Git.
+
+### Step 2. Create your database in cPanel
+
+In cPanel:
+
+1. open `MySQL Databases`
+2. create a new database
+3. create a new database user
+4. add that user to the database
+5. give the user `ALL PRIVILEGES`
+
+Important:
+
+- cPanel usually adds your account name as a prefix
+- for example, if your cPanel username is `shop1`, your final database may become `shop1_b2bai`
+- your final database user may become `shop1_aiuser`
+
+So your final `DATABASE_URL` often looks like:
+
+```env
+DATABASE_URL=mysql+pymysql://shop1_aiuser:YOUR_PASSWORD@localhost:3306/shop1_b2bai?charset=utf8mb4
+```
+
+### Step 3. Clone the repo with cPanel Git Version Control
+
+In cPanel:
+
+1. open `Git Version Control`
+2. choose `Create`
+3. paste your Git repository URL
+4. choose a folder inside your home directory
+
+Recommended folder:
+
+```text
+repositories/b2b-ai-support-api
+```
+
+Why this folder is good:
+
+- it stays outside `public_html`
+- it is easier to manage
+- it works well as the Python application root
+
+After the clone finishes, your app files should exist inside that folder.
+
+### Step 4. Create the Python application
+
+Now open either:
+
+- `Application Manager`
+- or `Setup Python App`
+
+Your host may show one of these names depending on server setup.
+
+Use these values:
+
+- Application root: the same folder you cloned above
+- Startup file: `passenger_wsgi.py`
+- Entry point / application object: `application`
+- Python version: use the newest stable version your host allows, preferably `3.10+`
+
+If cPanel asks for a URL or domain:
+
+- choose the domain or subdomain where you want the API to live
+- a subdomain like `api.yourdomain.com` is a clean choice
+
+### Step 5. Open cPanel Terminal
+
+In cPanel, open `Terminal`.
+
+The Python app page usually shows the command needed to activate the virtual environment. Use the exact command cPanel gives you.
+
+It often looks something like this:
+
+```bash
+source /home/yourcpaneluser/virtualenv/repositories/b2b-ai-support-api/3.11/bin/activate
+```
+
+Your path may be different. Use the one shown by cPanel.
+
+### Step 6. Install the Python packages
+
+After activating the virtual environment, run:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run that from inside your project folder.
+
+### Step 7. Create the `.env` file on the server
+
+Inside your project folder, create a `.env` file.
+
+You can do it from cPanel File Manager or Terminal.
+
+Use the production example from the section above and fill in:
+
+- your database info
+- your platform token
+- your Gemini key
+
+For first deployment, keep this:
+
+```env
+SPEECH_PROVIDER=gemini
+```
+
+Later, when you are ready for stronger voice-note transcription, switch to:
+
+```env
+SPEECH_PROVIDER=google_cloud
+```
+
+### Step 8. Initialize the database
+
+In Terminal, inside the project folder:
+
+```bash
+python -m app.cli init-db
+```
+
+This creates the tables.
+
+### Step 9. Run the health checker
+
+Still in Terminal:
+
+```bash
+python -m app.cli doctor
+```
+
+This command checks:
+
+- whether the database connects
+- whether your upload folder is writable
+- whether your LLM provider is still on mock mode
+- whether important secrets are still placeholders
+
+If it reports problems, fix those before going live.
+
+### Step 10. Create your first brand
+
+Run:
+
+```bash
+python -m app.cli create-brand --name "My Shop" --slug my-shop
+```
+
+The command prints:
+
+- the brand id
+- the brand API key
+
+Save that API key somewhere safe.
+
+### Step 11. Restart the Python app
+
+After setup, restart the app from cPanel if there is a restart button.
+
+If your hosting uses Passenger and does not show a restart button, create or update:
+
+```text
+tmp/restart.txt
+```
+
+Command:
+
+```bash
+mkdir -p tmp
+touch tmp/restart.txt
+```
+
+That tells Passenger to reload the app.
+
+### Step 12. Add the cron job for background jobs
+
+In cPanel, open `Cron Jobs`.
+
+Add a cron command like this:
+
+```bash
+cd /home/yourcpaneluser/repositories/b2b-ai-support-api && /home/yourcpaneluser/virtualenv/repositories/b2b-ai-support-api/3.11/bin/python -m app.cli run-jobs --limit 20
+```
+
+Use your real Python virtual environment path and project path.
+
+Recommended schedule for starting:
+
+- every 1 minute
+
+If your hosting plan is very limited, every 2 to 5 minutes is acceptable for early testing.
+
+### Step 13. Test the live app
+
+Open these in the browser:
+
+- `https://your-domain.com/api/health`
+- `https://your-domain.com/docs`
+
+You want `/api/health` to return something like:
+
 ```json
 {
-  "status": "send",
-  "reply_text": "Standard shipping takes 2-3 business days...",
-  "confidence": 0.87,
-  "used_sources": [
-    {
-      "title": "Shipping Policy",
-      "score": 0.94
-    }
-  ]
+  "status": "ok",
+  "app": "B2B AI Support API",
+  "env": "production",
+  "llm_provider": "gemini",
+  "speech_provider": "gemini"
 }
 ```
 
-### Adding Knowledge
+Then test:
+
+- creating a brand rule
+- adding a knowledge document
+- sending a text message
+- sending a voice note
+- sending a product image
+
+## How to update the app later in cPanel
+
+When you change the code locally:
+
+1. commit and push your changes to Git
+2. in cPanel, open `Git Version Control`
+3. open your repository
+4. click `Update from Remote`
+5. if `requirements.txt` changed, open Terminal and run `pip install -r requirements.txt`
+6. restart the app
+
+Simple restart command:
 
 ```bash
-# Upload knowledge document
-curl -X POST http://127.0.0.1:8000/api/v1/knowledge/documents \
-  -H "X-Platform-Token: secure-platform-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brand_id": 1,
-    "title": "Company FAQ",
-    "source_type": "faq",
-    "raw_text": "Q: How do I return an item?\nA: Returns are accepted within 30 days..."
-  }'
+mkdir -p tmp
+touch tmp/restart.txt
 ```
 
-### File Attachments
+You usually do not need cPanel's separate Git deployment feature for this project if the repo folder itself is your live Python app folder.
 
-```bash
-# Upload file
-curl -X POST http://127.0.0.1:8000/api/v1/uploads \
-  -H "X-Brand-Api-Key: your-brand-api-key" \
-  -F "file=@screenshot.jpg"
+## Logs and troubleshooting in cPanel
 
-# Use in message
-curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
-  -H "X-Brand-Api-Key: your-brand-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brand_id": 1,
-    "customer_external_id": "customer-123",
-    "conversation_external_id": "conv-456",
-    "text": "Please help with this issue",
-    "attachment_ids": [1]
-  }'
+If something goes wrong:
+
+### Check the health route
+
+Open:
+
+- `/api/health`
+
+If it fails, the app may not be starting correctly.
+
+### Check the Python app log
+
+cPanel's Application Manager docs say Python app logs are usually in:
+
+```text
+your-app-folder/stderr.log
 ```
 
-### Async Processing
+Check that file first.
 
-```bash
-# Queue for background processing
-curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
-  -H "X-Brand-Api-Key: your-brand-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brand_id": 1,
-    "customer_external_id": "customer-123",
-    "conversation_external_id": "conv-456",
-    "text": "Complex question here",
-    "process_async": true
-  }'
+### Common problems
 
-# Check job status
-curl http://127.0.0.1:8000/api/v1/jobs/1 \
-  -H "X-Brand-Api-Key: your-brand-api-key"
+#### Problem: database connection error
+
+Fix:
+
+- check the exact cPanel database name
+- check the exact cPanel database username
+- check the password
+- make sure the DB user was added to the DB with all privileges
+- keep `localhost` as the host unless your provider says otherwise
+
+#### Problem: 401 unauthorized
+
+Fix:
+
+- make sure you are sending `X-Platform-Token` for admin routes
+- make sure you are sending `X-Brand-Api-Key` for brand routes
+
+#### Problem: uploads fail
+
+Fix:
+
+- check `MAX_UPLOAD_BYTES`
+- make sure `storage/uploads` is writable
+- keep files within the hosting size limits
+
+#### Problem: voice notes are weak
+
+Fix:
+
+- keep messages shorter
+- prefer clearer audio formats like `wav`, `mp3`, `m4a`, `ogg`, or `flac`
+- later switch `SPEECH_PROVIDER=google_cloud`
+
+#### Problem: replies are too generic
+
+Fix:
+
+- add better knowledge documents
+- add real style examples
+- add stricter brand rules
+- upload clearer product reference images
+
+## Security tips
+
+- never commit your real `.env`
+- use a long random `PLATFORM_API_TOKEN`
+- rotate keys if they are ever exposed
+- keep the app outside `public_html` when possible
+- create a separate subdomain for the API
+- do not share brand API keys between businesses
+
+Important:
+
+If this repo or your local `.env` ever gets uploaded somewhere public, rotate your Gemini key immediately.
+
+## Testing
+
+Run tests locally:
+
+```powershell
+python -m pytest -q
 ```
 
-## 📚 Knowledge Base Setup (A-Z Complete Guide)
+Useful local checks:
 
-The knowledge base is the brain of your AI assistant. How you structure it determines response quality. Different business types require different document structures.
-
-### Core Concepts
-
-**What is a Knowledge Document?**
-A knowledge document is plain text information that the AI searches through to answer customer questions. The AI finds relevant sections and incorporates them into responses.
-
-**How Does It Work?**
-```
-Customer asks → AI searches documents → AI finds relevant info → AI generates response
+```powershell
+python -m app.cli doctor
+python -m app.cli init-db
+python -m app.cli create-brand --name "Test" --slug test
 ```
 
-When a customer says "Do you have size large?", the AI searches your knowledge documents for size-related information and includes it in the answer.
-
-### Document Structure Principles
-
-1. **One document = One topic** (e.g., "Return Policy" or "Product Catalog")
-2. **Use clear headings** so AI understands section boundaries
-3. **Keep sentences concise** and informative
-4. **Include specifics** (prices, times, names)
-5. **Avoid marketing fluff** - facts only
-
-### Type 1: Product-Based Businesses
-
-**Examples**: Fashion stores, Electronics shops, Furniture, Books, Toys
-
-#### Document 1: Product Catalog
-
-```
-PRODUCT CATALOG - Electronics Store
-
-LAPTOPS
-
-Dell XPS 13
-- Price: $999
-- Screen: 13-inch FHD
-- Processor: Intel i5-1135G7
-- RAM: 8GB DDR4
-- Storage: 512GB SSD
-- Weight: 1.2 kg
-- Warranty: 1 year manufacturer
-- Availability: In stock
-- Shipping weight: 2 kg
-
-MacBook Air M1
-- Price: $1,199
-- Screen: 13-inch Retina
-- Processor: Apple M1 Chip
-- RAM: 8GB unified memory
-- Storage: 256GB SSD
-- Weight: 1.24 kg
-- Warranty: 1 year limited warranty
-- Availability: Pre-order only
-- Expected delivery: 5-7 business days
-- Shipping weight: 2.5 kg
-
-SMARTPHONES
-
-iPhone 14 Pro
-- Price: $999
-- Screen: 6.1-inch AMOLED
-- Storage options: 128GB, 256GB, 512GB, 1TB
-- Colors: Space Black, Gold, Silver, Deep Purple
-- Camera: 48MP main + 12MP ultra-wide + 12MP telephoto
-- Battery life: Up to 26 hours
-- Warranty: 1 year limited warranty
-- Availability: In stock for black/gold, 2-3 week wait for others
-- Shipping weight: 0.5 kg
-
-Samsung Galaxy S23
-- Price: $799
-- Screen: 6.1-inch Dynamic AMOLED
-- Storage: 128GB, 256GB
-- Colors: Phantom Black, Cream, Green
-- Camera: 50MP main + 12MP ultra-wide + 10MP telephoto
-- Battery: 4000 mAh, 25W fast charging
-- Warranty: 1 year limited warranty
-- Availability: In stock
-- Shipping weight: 0.5 kg
-
-ACCESSORIES
-
-USB-C Fast Charger
-- Price: $29
-- Power: 65W
-- Compatible: All phones and laptops with USB-C
-- Warranty: 2 years
-- Availability: In stock, ships within 24 hours
-- Shipping weight: 0.2 kg
-
-Screen Protector (Pack of 2)
-- Price: $12
-- Fits: iPhone 14 Pro
-- Material: Tempered glass
-- Features: Anti-fingerprint, anti-glare
-- Warranty: Lifetime replacement if defective
-- Availability: In stock
-- Shipping weight: 0.1 kg
-```
-
-#### Document 2: Product Specifications & Compatibility
-
-```
-PRODUCT SPECS & COMPATIBILITY - Electronics Store
-
-CHARGER COMPATIBILITY CHART
-
-Apple Devices Compatible with 20W Apple Charger:
-- iPhone 12 and later (iPhone 12, 13, 14, 14 Pro)
-- iPad Air 5th generation and later
-- iPad mini 6th generation and later
-
-Android Devices Compatible with 65W USB-C Charger:
-- Samsung Galaxy S22, S23, S24
-- Google Pixel 7, 8
-- OnePlus 11, 12
-
-SCREEN PROTECTOR COMPATIBILITY
-
-iPhone 14 Pro Protectors:
-- Size: 6.1 inches
-- Includes: 2 protectors + applicator + cleaning cloth
-- Do NOT fit iPhone 14 (non-Pro) - different size
-- Do NOT fit iPhone 13 Pro - different dimensions
-
-iPhone 13 Pro Protectors:
-- Size: 6.1 inches but different cutouts
-- Note: Not compatible with iPhone 14 Pro due to different camera positions
-
-STORAGE EXPANSION
-
-iPhone: Cannot expand storage (no microSD slot)
-Samsung Galaxy S23: Cannot expand storage (no microSD slot)
-
-Devices with microSD expansion:
-- Samsung Galaxy Note series
-- Google Pixel 6a
-- OnePlus devices up to OnePlus 11
-```
-
-#### Document 3: Pricing & Discounts
-
-```
-PRICING INFORMATION - Electronics Store
-
-CURRENT PRICING (Valid until December 31, 2024)
-
-Standard Prices:
-- Dell XPS 13: $999
-- MacBook Air M1: $1,199
-- iPhone 14 Pro: $999
-- Samsung Galaxy S23: $799
-- Chargers: $29-49
-- Accessories: $10-30
-
-BULK DISCOUNTS
-
-Order 5-9 units: 5% discount
-Order 10-24 units: 10% discount
-Order 25+ units: 15% discount
-- Applies to same product only
-- Not stackable with other discounts
-- Requires business account
-
-STUDENT DISCOUNT
-
-10% off with valid .edu email
-- Applies to most products
-- Excludes clearance items
-- Max 3 devices per year per student
-
-SEASONAL SALES
-
-Black Friday (November 23-27): Up to 30% off
-Cyber Monday (November 30): Up to 25% off
-Holiday Sales (December 15-25): Up to 20% off
-New Year Sale (January 1-15): Up to 15% off
-
-NO COUPONS ACCEPTED
-We do not accept external coupon codes or promotional codes.
-```
-
----
-
-### Type 2: Service-Based Businesses
-
-**Examples**: Consulting, Cleaning services, Fitness studios, Hair salons, Legal services
-
-#### Document 1: Service Offerings
-
-```
-SERVICES CATALOG - Premium Cleaning Service
-
-RESIDENTIAL CLEANING
-
-Standard Clean
-- Duration: 2-3 hours (depends on house size)
-- Frequency: Weekly, bi-weekly, or monthly
-- Includes: Vacuuming, dusting, mopping floors, cleaning bathrooms, kitchen surfaces
-- Does NOT include: Oven interior, carpet shampooing, window exterior
-- Price: $100-150 depending on square footage
-- Available: Monday-Friday 9AM-5PM, Saturday 9AM-1PM
-- Minimum booking: 1 time
-
-Deep Clean
-- Duration: 4-6 hours
-- Frequency: Quarterly or annually
-- Includes: All standard clean services PLUS oven interior, refrigerator, baseboards, inside cabinets
-- Does NOT include: Carpet shampooing, window washing, pressure washing
-- Price: $250-400 depending on square footage
-- Available: Saturday 10AM-6PM, Sunday 1PM-6PM
-- Notice required: 48 hours in advance
-- Minimum booking: 1 time
-
-Move-In/Move-Out Clean
-- Duration: 6-8 hours
-- Includes: Deep clean of entire property, wall spots, light fixtures, cabinet interiors
-- Price: $500-800 depending on property size
-- Available: Weekdays with 72 hours notice
-- Includes: Post-cleaning inspection report with photos
-
-COMMERCIAL CLEANING
-
-Office Cleaning (Daily)
-- Duration: 1-2 hours per visit
-- Frequency: Daily Monday-Friday, or 3x per week
-- Includes: Trash removal, floor mopping, restroom cleaning, desk sanitizing
-- Price: $300-500 per week
-- Available: Evening hours after 5PM
-- Minimum contract: 4 weeks
-
-Carpet Cleaning
-- Method: Steam cleaning (hot water extraction)
-- Duration: 30-60 minutes per 500 sq ft
-- Price: $1-2 per square foot
-- Includes: Pre-treatment stain removal, deodorizing, protective finish application
-- Drying time: 4-8 hours
-- Available: Weekdays only
-- Notice required: 5 days advance notice
-```
-
-#### Document 2: Service Terms & Conditions
-
-```
-SERVICE TERMS & CONDITIONS - Premium Cleaning Service
-
-BOOKING & SCHEDULING
-
-How to book:
-- Call: 1-800-CLEAN-01
-- Online: www.premiumcleaning.com/book
-- Hours: Monday-Friday 8AM-6PM EST, Saturday 9AM-3PM EST
-
-Rescheduling:
-- Free rescheduling with 48 hours notice
-- Charges apply for cancellations with less than 48 hours notice: 50% of service cost
-- Holiday reschedules may not be available
-
-PRICING & PAYMENT
-
-Accepted payment: Credit card, debit card, check, ACH transfer
-Payment terms: Due within 7 days of service
-Late payment fees: $25 per week after due date
-
-Price locks:
-- Quotes valid for 30 days
-- Annual contracts: Price locked for 12 months
-- Price increases apply only to new customers or at contract renewal
-
-GUARANTEES & LIABILITY
-
-Satisfaction guarantee:
-- If unsatisfied within 24 hours of service, we will re-clean that area at no charge
-- Full refund available within 48 hours if completely unsatisfied
-
-Liability:
-- We are not responsible for damages caused by pre-existing conditions
-- Coverage for accidental damages up to $500 per incident
-- Customers must have contents insurance for valuable items
-
-CANCELLATION POLICY
-
-Less than 48 hours: 50% charge
-Less than 24 hours: 100% charge (full service cost)
-Holiday/weekend bookings: 72 hours notice required
-No-show: Full charge applies
-```
-
-#### Document 3: Staff & Expertise
-
-```
-PROFESSIONAL TEAM - Premium Cleaning Service
-
-TEAM MEMBERS
-
-Lead Cleaning Specialist - Maria
-- Experience: 12 years in residential and commercial cleaning
-- Specialties: Deep cleaning, move-ins/outs, difficult stain removal
-- Languages: English, Spanish
-- Certifications: ISSA Professional Cleaning Specialist
-- Available: Monday-Saturday
-
-Cleaner - John
-- Experience: 8 years, commercial cleaning focus
-- Specialties: Office cleaning, disinfection, large-scale projects
-- Certifications: OSHA Safety Certification
-- Available: Tuesday-Friday evenings, Saturday
-
-Cleaner - Priya
-- Experience: 6 years, residential cleaning
-- Specialties: Detail work, pet-friendly cleaning, eco-friendly methods
-- Languages: English, Hindi
-- Available: Wednesday-Sunday
-
-CERTIFICATIONS & TRAINING
-
-- All staff members are background checked (within last 12 months)
-- All team members completed eco-friendly cleaning training
-- Chemical safety certification (2024)
-- Customer service training (annual)
-- CPR certification (some staff members)
-```
-
----
-
-### Type 3: SaaS/Software Services
-
-**Examples**: Project management tools, Analytics platforms, CRM systems, Email software
-
-#### Document 1: Features & Pricing
-
-```
-FEATURES & PRICING - ProjectFlow SaaS
-
-PRICING PLANS
-
-Starter Plan - $29/month
-- Up to 5 team members
-- 10 active projects
-- Basic reporting
-- Email support
-- File storage: 5GB
-- Integrations: 3 max
-- Best for: Small teams and startups
-
-Professional Plan - $99/month
-- Up to 25 team members
-- Unlimited active projects
-- Advanced reporting + custom dashboards
-- Priority email and chat support
-- File storage: 100GB
-- Integrations: Unlimited
-- Timeline and Gantt chart views
-- Automated workflows
-- Best for: Growing teams
-
-Enterprise Plan - Custom pricing
-- Unlimited team members
-- Unlimited projects
-- Custom reporting and analytics
-- Dedicated account manager
-- Phone + email support (24/7)
-- Unlimited file storage
-- Custom integrations
-- SSO (Single Sign-On)
-- On-premise deployment available
-- Best for: Large organizations
-
-All plans include:
-- Task management
-- Team collaboration
-- Basic timeline view
-- Email notifications
-- Mobile app access
-- 30-day free trial (no credit card required)
-```
-
-#### Document 2: Integration Catalog
-
-```
-INTEGRATIONS AVAILABLE - ProjectFlow SaaS
-
-STARTER PLAN INTEGRATIONS (Choose 3)
-
-Slack
-- Send ProjectFlow notifications to Slack
-- Create tasks from Slack messages
-- Setup time: 5 minutes
-- Support: Full documentation available
-
-Google Drive
-- Attach Google Drive files to tasks
-- View Google Docs directly in ProjectFlow
-- Setup time: 2 minutes
-- Support: Automatic sync
-
-Zapier
-- Connect ProjectFlow to 1000+ apps
-- Create complex automation workflows
-- Setup time: 10-15 minutes
-- Support: Zapier documentation
-
-PROFESSIONAL PLAN INTEGRATIONS (Unlimited)
-
-Everything in Starter plus:
-
-Microsoft Teams
-- Notifications to Teams channels
-- Bi-directional sync with Teams tasks
-
-Jira Connection
-- Sync ProjectFlow tasks with Jira issues
-- Real-time updates both directions
-
-Salesforce
-- Link customers to projects
-- Automated follow-ups
-
-Google Calendar
-- View project timelines in Google Calendar
-- Block calendar time for milestones
-
-GitHub
-- Link code commits to project tasks
-- Automated task creation from PRs
-
-Custom API
-- REST API with OAuth 2.0
-- Webhook support
-- Rate limits: 1000 requests/hour
-
-ENTERPRISE INTEGRATIONS
-
-All Professional integrations plus:
-
-SAML Single Sign-On
-- Enterprise security standard
-- Works with Okta, Azure AD, Google Workspace
-- Setup: Dedicated support team assists
-
-Custom Integrations
-- Build custom integrations with API
-- Dedicated technical account manager
-- SLA: 99.9% uptime guaranteed
-```
-
----
-
-### Type 4: Hybrid/Marketplace Business
-
-**Examples**: Food delivery, Ride-sharing, Freelance platforms, Real estate, AirBnB-type services
-
-#### Document 1: Service & Listing Details
-
-```
-SERVICE DETAILS & POLICIES - FreshFood Delivery Platform
-
-RESTAURANT PARTNER NETWORK
-
-Restaurant 1: "Pepper's Italian"
-- Cuisine: Italian
-- Average delivery time: 30-45 minutes
-- Delivery fee: $3.99
-- Minimum order: $15
-- Hours: 11AM-10PM daily
-- Rating: 4.7/5 (1,200+ reviews)
-- Payment methods: Card, digital wallet
-- Special diets: Vegetarian, Gluten-free options available
-
-Restaurant 2: "Spice House"
-- Cuisine: Indian, Asian
-- Average delivery time: 20-35 minutes
-- Delivery fee: $2.99
-- Minimum order: $12
-- Hours: 12PM-11PM daily, 1PM-11PM Sunday
-- Rating: 4.9/5 (2,100+ reviews)
-- Payment methods: Card, digital wallet, PayPal
-- Special diets: Vegan, Vegetarian, Halal options
-
-DELIVERY ZONES
-
-Zone 1 (Downtown)
-- Area: Main street to Riverside (see map)
-- Standard delivery time: 15-25 minutes
-- Delivery fee: $2.99-3.99
-- Coverage: 24/7
-
-Zone 2 (Suburb A)
-- Area: Oak Avenue to Park Lane (see map)
-- Standard delivery time: 30-45 minutes
-- Delivery fee: $4.99-5.99
-- Coverage: 10AM-11PM daily
-
-Zone 3 (Suburb B)
-- Area: Highway 5 corridor (see map)
-- Standard delivery time: 45-60 minutes
-- Delivery fee: $6.99
-- Coverage: 12PM-10PM daily
-- Note: Not available Sundays
-
-DELIVERY OPTIONS
-
-Standard Delivery: 30-60 minutes
-Express Delivery: 15-25 minutes (extra $2)
-Scheduled Delivery: Choose arrival time (up to 7 days advance)
-- Allows planning meals in advance
-- No extra charge
-- Requires 2-hour window for restaurant preparation
-```
-
-#### Document 2: Pricing & Fees
-
-```
-PRICING STRUCTURE - FreshFood Delivery Platform
-
-SERVICE FEES BREAKDOWN
-
-Per Order Fees:
-- Platform fee: $0.50 per order (transparent charge)
-- Delivery fee: Varies by restaurant and zone (see restaurant listing)
-- Tip for driver: Optional, recommended 15-20%
-
-Restaurant Prices:
-- Prices shown include all restaurant markups
-- Same as dine-in prices for most items
-- Some restaurants charge 5-10% premium for delivery orders
-
-Discounts & Promotions
-
-First-time user: $5 off first order of $15+
-Daily deals: Monday-Friday 2-4 PM, Save 25-40% on select items
-Bundle offers: Combo meals save 10-15%
-Loyalty program: Earn 1 point per dollar, 100 points = $10 credit
-
-SUBSCRIPTION (Premium Plus)
-
-Monthly plan: $9.99/month
-- Free delivery on orders $15+
-- 20% off on one order per week
-- Early access to daily deals
-- Priority customer support
-- Cancellable anytime
-
-REFUNDS & CREDITS
-
-Wrong order received: Full refund + $5-10 credit
-Very late delivery: Partial refund 25-50% depending on delay
-Item missing from order: Refund for that item only
-Damaged food: Refund + replacement at no charge
-```
-
----
-
-### Adding Documents via API
-
-```bash
-# Example: Add product catalog (Product Business)
-curl -X POST http://127.0.0.1:8000/api/v1/knowledge/documents \
-  -H "X-Platform-Token: secure-platform-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brand_id": 1,
-    "title": "Product Catalog - Electronics",
-    "source_type": "catalog",
-    "raw_text": "PRODUCT CATALOG\n\nDell XPS 13\nPrice: $999\n..."
-  }'
-
-# Example: Add service details (Service Business)
-curl -X POST http://127.0.0.1:8000/api/v1/knowledge/documents \
-  -H "X-Platform-Token: secure-platform-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brand_id": 2,
-    "title": "Cleaning Services",
-    "source_type": "services",
-    "raw_text": "SERVICES CATALOG\n\nStandard Clean\nDuration: 2-3 hours\n..."
-  }'
-```
-
-### Best Practices for All Business Types
-
-1. **Keep information current**: Update prices, availability, and policies regularly
-2. **Use consistent formatting**: Helps AI understand document structure
-3. **Include specifics**: 
-   - Exact prices (not "affordable")
-   - Exact times (not "fast delivery")
-   - Exact features (not "great quality")
-4. **Organize logically**: Group related information together
-5. **Separate concerns**: Don't mix product info with policy in same document
-6. **One document per topic**: Create separate documents for:
-   - Pricing (one doc)
-   - Policies (one doc)
-   - Products/Services (one doc)
-   - FAQ or troubleshooting (one doc)
-
-### Document Types to Create
-
-For ANY business, create these documents:
-
-| Document Type | What Goes Here | Priority |
-|---|---|---|
-| **Catalog/Offerings** | All products/services with details | CRITICAL |
-| **Pricing & Discounts** | All prices, discounts, payment terms | CRITICAL |
-| **Policies** | Returns, cancellations, guarantees, terms | CRITICAL |
-| **FAQ** | Common questions and answers | HIGH |
-| **How-To Guides** | Instructions on using products/services | MEDIUM |
-| **Technical Specs** | Specifications, compatibility, requirements | MEDIUM |
-| **Contact & Hours** | Support hours, contact methods, locations | MEDIUM |
-
-### Testing Your Knowledge Documents
-
-After adding documents, test with real questions:
-
-```bash
-# Test 1: Simple product question
-curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
-  -H "X-Brand-Api-Key: your-brand-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brand_id": 1,
-    "customer_external_id": "test-user",
-    "conversation_external_id": "test-conv",
-    "text": "What is the price of your main product?"
-  }'
-
-# Test 2: Policy question
-curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
-  -H "X-Brand-Api-Key: your-brand-api-key" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "brand_id": 1,
-    "customer_external_id": "test-user",
-    "conversation_external_id": "test-conv",
-    "text": "Can I return something after 30 days?"
-  }'
-```
-
-**Check the response:**
-- ✅ Reply should mention specific info from documents
-- ✅ `used_sources` should show which documents were used
-- ✅ Confidence score should be 0.7+
-- ❌ If generic response with low confidence, add more specific information to documents
-
-## 🏢 Multi-Tenant Management
-
-### Creating Brands
-
-```bash
-# Create new brand
-python -m app.cli create-brand \
-  --name "Fashion Store" \
-  --slug fashion-store \
-  --tone-name "Stylish and trendy" \
-  --tone-instructions "Use fashion-forward language"
-```
-
-### Brand Customization
-
-#### Update Brand Settings
-```bash
-# Via database (advanced)
-mysql -u root b2b_ai_support -e "
-UPDATE brands SET
-  tone_instructions = 'Be enthusiastic and use exclamation points!',
-  fallback_handoff_message = 'Our fashion experts will help you shortly!'
-WHERE id = 1;
-"
-```
-
-#### Add Brand Rules
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/brands/1/rules \
-  -H "X-Platform-Token: secure-platform-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "category": "policy",
-    "title": "Discount Limit",
-    "content": "Never offer more than 20% discount",
-    "handoff_on_match": true
-  }'
-```
-
-#### Add Style Examples
-```bash
-curl -X POST http://127.0.0.1:8000/api/v1/brands/1/style-examples \
-  -H "X-Platform-Token: secure-platform-token-12345" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "title": "Size Question",
-    "trigger_text": "What size should I order?",
-    "ideal_reply": "Great question! Check our size guide at [link]. Generally, we recommend ordering your usual size."
-  }'
-```
-
-### Managing Multiple Customers
-
-Each customer is identified by `customer_external_id`:
-
-```bash
-# Customer A
-curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
-  -H "X-Brand-Api-Key: brand-key-1" \
-  -H "Content-Type: application/json" \
-  -d '{"brand_id": 1, "customer_external_id": "user-123", "text": "Hello"}'
-
-# Customer B (different conversation)
-curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
-  -H "X-Brand-Api-Key: brand-key-1" \
-  -H "Content-Type: application/json" \
-  -d '{"brand_id": 1, "customer_external_id": "user-456", "text": "Hi there"}'
-```
-
-## 🔌 API Reference
-
-### Authentication
-
-| Header | Description | Example |
-|--------|-------------|---------|
-| `X-Platform-Token` | Admin operations | `secure-platform-token-12345` |
-| `X-Brand-Api-Key` | Brand operations | `brand_ABC123...` |
-
-### Core Endpoints
-
-#### Health Check
-```http
-GET /api/health
-```
-
-#### Message Processing
-```http
-POST /api/v1/messages/process
-Content-Type: application/json
-
-{
-  "brand_id": 1,
-  "customer_external_id": "string",
-  "conversation_external_id": "string",
-  "text": "string",
-  "channel": "web",
-  "attachment_ids": [],
-  "process_async": false
-}
-```
-
-#### Knowledge Management
-```http
-POST /api/v1/knowledge/documents
-GET /api/v1/knowledge/documents
-DELETE /api/v1/knowledge/documents/{id}
-```
-
-#### Brand Management
-```http
-POST /api/v1/brands
-GET /api/v1/brands
-PUT /api/v1/brands/{id}
-```
-
-#### File Uploads
-```http
-POST /api/v1/uploads
-Content-Type: multipart/form-data
-
-file: [binary data]
-```
-
-#### Job Management
-```http
-GET /api/v1/jobs/{id}
-POST /api/v1/jobs/process-pending
-```
-
-## 🚀 Deployment
-
-### cPanel Deployment
-
-1. **Create Python App** in cPanel
-2. **Set Application Root** to your project directory
-3. **Set Application Startup File** to `passenger_wsgi.py`
-4. **Environment Variables**: Copy `.env` values to cPanel
-5. **Install Dependencies**: `pip install -r requirements.txt`
-6. **Initialize Database**: `python -m app.cli init-db`
-7. **Create Brands**: `python -m app.cli create-brand --name "Your Brand"`
-8. **Setup Cron Job**:
-   ```bash
-   python -m app.cli run-jobs --limit 20
-   ```
-   Run every 5 minutes
-
-### Docker Deployment
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install -r requirements.txt
-
-COPY . .
-EXPOSE 8000
-
-CMD ["python", "main.py"]
-```
-
-```bash
-docker build -t b2b-ai-support .
-docker run -p 8000:8000 b2b-ai-support
-```
-
-### Production Checklist
-
-- [ ] Set `DEBUG=false`
-- [ ] Use strong `PLATFORM_API_TOKEN`
-- [ ] Configure production database
-- [ ] Set up SSL certificates
-- [ ] Configure rate limiting
-- [ ] Set up monitoring
-- [ ] Configure backups
-
-## 🛠️ Development
-
-### Running Tests
-
-```bash
-# Run all tests
-pytest
-
-# Run specific test
-pytest app/tests/test_api.py::test_brand_setup_and_reply_flow
-
-# With coverage
-pytest --cov=app --cov-report=html
-```
-
-### Code Quality
-
-```bash
-# Format code
-black app/
-isort app/
-
-# Lint code
-flake8 app/
-mypy app/
-```
-
-### Adding New Features
-
-1. **LLM Providers**: Implement `LLMProvider` interface
-2. **Storage Providers**: Extend storage abstraction
-3. **API Endpoints**: Add to `app/api/routes/`
-4. **Database Models**: Update `app/models.py`
-
-## 🔧 Troubleshooting
-
-### Common Issues
-
-#### Database Connection Failed
-```bash
-# Check MySQL service
-sudo systemctl status mysql
-
-# Test connection
-mysql -u root -p -e "SELECT 1;"
-```
-
-#### API Key Issues
-- Verify `GEMINI_API_KEY` in `.env`
-- Check API key permissions
-- Ensure billing is enabled
-
-#### Import Errors
-```bash
-# Reinstall dependencies
-pip install -r requirements.txt --force-reinstall
-```
-
-#### Permission Errors
-```bash
-# Fix upload directory permissions
-chmod 755 storage/uploads
-```
-
-### Debug Mode
-
-Enable debug logging:
-```bash
-export DEBUG=true
-python main.py
-```
-
-Check logs in terminal or configure file logging.
-
-### Performance Tuning
-
-- **Database**: Add indexes on frequently queried columns
-- **Knowledge Search**: Adjust `KNOWLEDGE_TOP_K` and `KNOWLEDGE_SCAN_LIMIT`
-- **Caching**: Implement Redis for session storage
-- **Async Jobs**: Monitor queue length and processing times
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push to branch: `git push origin feature/amazing-feature`
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow PEP 8 style guide
-- Write tests for new features
-- Update documentation
-- Use type hints
-- Keep commits atomic
-
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## 🙏 Acknowledgments
-
-- [FastAPI](https://fastapi.tiangolo.com/) for the web framework
-- [SQLAlchemy](https://sqlalchemy.org/) for ORM
-- [Google Gemini](https://ai.google.dev/) for AI capabilities
-- [LangChain](https://python.langchain.com/) for inspiration
-
-## 📞 Support
-
-- **Issues**: [GitHub Issues](https://github.com/yourusername/b2b-ai-chatbot-api-with-rag/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/yourusername/b2b-ai-chatbot-api-with-rag/discussions)
-- **Email**: your-email@example.com
-
----
-
-**Made with ❤️ for businesses who want smarter customer support**
-- One brand cannot read another brand's customers, conversations, or documents
+## Future upgrades you can add later
+
+- Facebook Messenger webhook wrapper
+- WordPress plugin wrapper
+- admin dashboard
+- live order lookup
+- stock lookup
+- courier tracking integration
+- better audio cleanup before transcription
+- stronger moderation rules
+- more LLM providers such as OpenAI or others
+
+## References
+
+- cPanel Application Manager docs: https://docs.cpanel.net/cpanel/software/application-manager/132/
+- cPanel Passenger docs: https://docs.cpanel.net/knowledge-base/web-services/using-passenger-applications/
+- cPanel Git deployment docs: https://docs.cpanel.net/knowledge-base/web-services/guide-to-git-deployment/
+- Google Gemini audio docs: https://ai.google.dev/gemini-api/docs/audio
+- Google Gemini image docs: https://ai.google.dev/gemini-api/docs/image-understanding
+- Google Gemini embeddings docs: https://ai.google.dev/gemini-api/docs/embeddings
+- Google Cloud Speech supported languages: https://cloud.google.com/speech/docs/languages

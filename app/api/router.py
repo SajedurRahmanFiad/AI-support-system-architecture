@@ -1,11 +1,12 @@
 from fastapi import APIRouter
 
-from app.api.routes import brands, conversations, customers, health, jobs, knowledge, messages, uploads
+from app.api.routes import brands, conversations, customers, health, jobs, knowledge, messages, products, uploads
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(brands.router, tags=["brands"])
 api_router.include_router(knowledge.router, tags=["knowledge"])
+api_router.include_router(products.router, tags=["products"])
 api_router.include_router(uploads.router, tags=["uploads"])
 api_router.include_router(messages.router, tags=["messages"])
 api_router.include_router(customers.router, tags=["customers"])

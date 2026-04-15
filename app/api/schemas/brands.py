@@ -10,7 +10,7 @@ class BrandCreate(BaseModel):
     name: str
     slug: str
     description: str | None = None
-    default_language: str = "en"
+    default_language: str = "bn-BD"
     tone_name: str = "Helpful sales assistant"
     tone_instructions: str = ""
     fallback_handoff_message: str = "A human teammate will continue this conversation shortly."

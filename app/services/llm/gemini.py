@@ -95,6 +95,53 @@ class GeminiLLMProvider(LLMProvider):
             vectors.append(list(values))
         return vectors
 
+    def embed_image(self, image_data: bytes) -> list[float]:
+        if "embedding-2" in self.settings.gemini_embedding_model:
+            response = self.client.models.embed_content(
+                model=self.settings.gemini_embedding_model,
+                contents=[
+                    types.Part.from_bytes(
+                        data=image_data,
+                        mime_type=self._guess_image_mime_type(image_data),
+                    )
+                ],
+            )
+            embeddings = getattr(response, "embeddings", None)
+            if embeddings:
+                values = getattr(embeddings[0], "values", embeddings[0])
+                return list(values)
+
+        # Fallback for text-only embedding models: describe the image, then embed the description.
+        insight = self.analyze_attachment("image", "image/jpeg", image_data)
+        text = " ".join(part for part in [insight.summary, insight.extracted_text] if part)
+        vectors = self.embed_texts([text]) if text else []
+        return vectors[0] if vectors else []
+
+    def match_product_candidates(
+        self,
+        mime_type: str,
+        data: bytes,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not candidates:
+            return None
+
+        prompt = (
+            "You are matching a customer image to the most likely product from a small candidate list. "
+            "Use the image itself as the main signal. "
+            "Return JSON only with keys: matched, matched_candidate_id, confidence, explanation. "
+            "Set matched to false if none of the candidates is a confident match.\n\n"
+            f"Candidates:\n{json.dumps(candidates, ensure_ascii=True)}"
+        )
+        response = self.client.models.generate_content(
+            model=self.settings.gemini_model,
+            contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
+        )
+        payload = self._extract_json(getattr(response, "text", "") or "")
+        if not payload:
+            return None
+        return payload
+
     def _build_reply_prompt(
         self,
         brand: BrandContext,
@@ -117,7 +164,10 @@ class GeminiLLMProvider(LLMProvider):
             for item in knowledge
         ) or "No matching knowledge was found."
         attachment_text = "\n".join(
-            f"- {item.attachment_type}: {item.summary}. Transcript: {item.transcript or 'n/a'}. Extracted text: {item.extracted_text or 'n/a'}"
+            f"- {item.attachment_type}: {item.summary}. Transcript: {item.transcript or 'n/a'}. "
+            f"Translated text: {item.translated_text or 'n/a'}. "
+            f"Detected language: {item.detected_language or 'n/a'}. "
+            f"Extracted text: {item.extracted_text or 'n/a'}"
             for item in attachment_insights
         ) or "No attachments."
         customer_text = json.dumps(
@@ -149,6 +199,7 @@ class GeminiLLMProvider(LLMProvider):
             f"Incoming customer message:\n{incoming_text}\n\n"
             f"Attachment insights:\n{attachment_text}\n\n"
             f"Knowledge candidates:\n{knowledge_text}\n\n"
+            f"Language behavior: {self._language_instruction(brand.default_language, customer.language)}\n\n"
             "Reply_text should be customer-facing. customer_updates can include display_name, language, city, and facts. "
             "used_knowledge_ids should only contain chunk ids you actually used."
         )
@@ -174,3 +225,23 @@ class GeminiLLMProvider(LLMProvider):
             return json.loads(cleaned)
         except json.JSONDecodeError:
             return {}
+
+    def _guess_image_mime_type(self, image_data: bytes) -> str:
+        if image_data.startswith(b"\x89PNG\r\n\x1a\n"):
+            return "image/png"
+        if image_data.startswith(b"\xff\xd8\xff"):
+            return "image/jpeg"
+        if image_data.startswith(b"GIF87a") or image_data.startswith(b"GIF89a"):
+            return "image/gif"
+        if image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP":
+            return "image/webp"
+        return "image/jpeg"
+
+    def _language_instruction(self, brand_language: str, customer_language: str | None) -> str:
+        language = (customer_language or brand_language or "").lower()
+        if self.settings.force_bangla_reply_by_default and language.startswith("bn"):
+            return (
+                "Reply in natural Bangla used in Bangladesh unless the customer clearly prefers English. "
+                "If the customer mixes Bangla and English, mirror that style naturally."
+            )
+        return "Reply in the customer's apparent preferred language."

@@ -46,7 +46,7 @@ class Brand(Base, TimestampMixin):
     slug: Mapped[str] = mapped_column(String(120), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
     description: Mapped[str | None] = mapped_column(Text, default=None)
-    default_language: Mapped[str] = mapped_column(String(20), default="en")
+    default_language: Mapped[str] = mapped_column(String(20), default="bn-BD")
     tone_name: Mapped[str] = mapped_column(String(120), default="Helpful sales assistant")
     tone_instructions: Mapped[str] = mapped_column(Text, default="")
     fallback_handoff_message: Mapped[str] = mapped_column(
@@ -63,6 +63,7 @@ class Brand(Base, TimestampMixin):
     documents: Mapped[list[KnowledgeDocument]] = relationship(back_populates="brand", cascade="all, delete-orphan")
     customers: Mapped[list[Customer]] = relationship(back_populates="brand", cascade="all, delete-orphan")
     conversations: Mapped[list[Conversation]] = relationship(back_populates="brand", cascade="all, delete-orphan")
+    product_images: Mapped[list[ProductImage]] = relationship(back_populates="brand", cascade="all, delete-orphan")
 
 
 class BrandRule(Base, TimestampMixin):
@@ -217,7 +218,10 @@ class Attachment(Base, TimestampMixin):
     original_filename: Mapped[str | None] = mapped_column(String(255), default=None)
     storage_path: Mapped[str] = mapped_column(String(500))
     transcript: Mapped[str | None] = mapped_column(Text, default=None)
+    translated_text: Mapped[str | None] = mapped_column(Text, default=None)
     extracted_text: Mapped[str | None] = mapped_column(Text, default=None)
+    detected_language: Mapped[str | None] = mapped_column(String(20), default=None)
+    analysis_confidence: Mapped[float | None] = mapped_column(Float, default=None)
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
 
     message: Mapped[Message | None] = relationship(back_populates="attachments")
@@ -261,3 +265,17 @@ class AuditLog(Base, TimestampMixin):
     event_type: Mapped[str] = mapped_column(String(80), index=True)
     request_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
     response_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
+
+
+class ProductImage(Base, TimestampMixin):
+    __tablename__ = "product_images"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    product_name: Mapped[str] = mapped_column(String(255))
+    product_category: Mapped[str] = mapped_column(String(120))
+    storage_path: Mapped[str] = mapped_column(String(500))
+    image_embedding: Mapped[list[float] | None] = mapped_column(JSONText, default=None)
+    product_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
+
+    brand: Mapped[Brand] = relationship(back_populates="product_images")

@@ -24,7 +24,7 @@ def upload_attachment(
     storage_path, mime_type = save_upload(brand_id, file)
     attachment = models.Attachment(
         brand_id=brand_id,
-        attachment_type=detect_attachment_type(mime_type),
+        attachment_type=detect_attachment_type(mime_type, file.filename),
         mime_type=mime_type,
         original_filename=file.filename,
         storage_path=storage_path,

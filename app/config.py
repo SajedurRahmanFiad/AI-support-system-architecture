@@ -24,9 +24,24 @@ class Settings(BaseSettings):
 
     llm_provider: str = Field(default="gemini", alias="LLM_PROVIDER")
     gemini_api_key: str = Field(default="", alias="GEMINI_API_KEY")
-    gemini_model: str = Field(default="gemini-2.0-flash", alias="GEMINI_MODEL")
-    gemini_summary_model: str = Field(default="gemini-2.0-flash", alias="GEMINI_SUMMARY_MODEL")
-    gemini_embedding_model: str = Field(default="gemini-embedding-001", alias="GEMINI_EMBEDDING_MODEL")
+    gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
+    gemini_summary_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_SUMMARY_MODEL")
+    gemini_embedding_model: str = Field(default="gemini-embedding-2-preview", alias="GEMINI_EMBEDDING_MODEL")
+    speech_provider: str = Field(default="gemini", alias="SPEECH_PROVIDER")
+    google_cloud_project_id: str = Field(default="", alias="GOOGLE_CLOUD_PROJECT_ID")
+    speech_primary_language: str = Field(default="bn-BD", alias="SPEECH_PRIMARY_LANGUAGE")
+    speech_alt_languages: str = Field(default="bn-BD,en-US,en-GB,hi-IN", alias="SPEECH_ALT_LANGUAGES")
+    speech_low_confidence_threshold: float = Field(default=0.65, alias="SPEECH_LOW_CONFIDENCE_THRESHOLD")
+    gemini_inline_audio_max_bytes: int = Field(default=8_000_000, alias="GEMINI_INLINE_AUDIO_MAX_BYTES")
+    force_bangla_reply_by_default: bool = Field(default=True, alias="FORCE_BANGLA_REPLY_BY_DEFAULT")
+    unclear_audio_reply_bn: str = Field(
+        default="দুঃখিত, ভয়েস মেসেজটি পরিষ্কারভাবে বুঝতে পারিনি। দয়া করে ছোট করে আবার ভয়েস দিন, অথবা একটি টেক্সট মেসেজ পাঠান।",
+        alias="UNCLEAR_AUDIO_REPLY_BN",
+    )
+    unclear_audio_reply_en: str = Field(
+        default="Sorry, I could not understand the voice note clearly. Please send a shorter voice note or a text message.",
+        alias="UNCLEAR_AUDIO_REPLY_EN",
+    )
 
     knowledge_scan_limit: int = Field(default=400, alias="KNOWLEDGE_SCAN_LIMIT")
     knowledge_top_k: int = Field(default=5, alias="KNOWLEDGE_TOP_K")
@@ -37,7 +52,7 @@ class Settings(BaseSettings):
     upload_dir: str = Field(default="storage/uploads", alias="UPLOAD_DIR")
     allowed_origins: str = Field(default="*", alias="ALLOWED_ORIGINS")
 
-    default_timezone: str = Field(default="UTC", alias="DEFAULT_TIMEZONE")
+    default_timezone: str = Field(default="Asia/Dhaka", alias="DEFAULT_TIMEZONE")
     mock_llm_enabled_without_key: bool = Field(default=True, alias="MOCK_LLM_ENABLED_WITHOUT_KEY")
 
     @field_validator("debug", mode="before")
@@ -62,6 +77,10 @@ class Settings(BaseSettings):
         if self.allowed_origins.strip() == "*":
             return ["*"]
         return [item.strip() for item in self.allowed_origins.split(",") if item.strip()]
+
+    @property
+    def speech_alt_language_list(self) -> list[str]:
+        return [item.strip() for item in self.speech_alt_languages.split(",") if item.strip()]
 
 
 @lru_cache(maxsize=1)
