@@ -7,6 +7,7 @@ from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.json_utils import to_json_compatible
 from app.services.llm.base import (
     AttachmentInsight,
     BrandContext,
@@ -47,7 +48,7 @@ class GeminiLLMProvider(LLMProvider):
             flags=payload.get("flags", []),
             used_knowledge_ids=payload.get("used_knowledge_ids", []),
             internal_notes=payload.get("internal_notes"),
-            token_usage=getattr(response, "usage_metadata", {}) or {},
+            token_usage=self._serialize_usage_metadata(getattr(response, "usage_metadata", None)),
         )
 
     def summarize_conversation(self, brand: BrandContext, history: list[ConversationTurn]) -> SummaryResult:
@@ -245,3 +246,11 @@ class GeminiLLMProvider(LLMProvider):
                 "If the customer mixes Bangla and English, mirror that style naturally."
             )
         return "Reply in the customer's apparent preferred language."
+
+    def _serialize_usage_metadata(self, usage_metadata: Any) -> dict[str, Any]:
+        if not usage_metadata:
+            return {}
+        serialized = to_json_compatible(usage_metadata)
+        if isinstance(serialized, dict):
+            return serialized
+        return {"value": serialized}

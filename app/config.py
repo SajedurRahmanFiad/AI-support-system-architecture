@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     app_name: str = Field(default="B2B AI Support API", alias="APP_NAME")
     app_env: str = Field(default="development", alias="APP_ENV")
     debug: bool = Field(default=False, alias="DEBUG")
+    root_path: str = Field(default="", alias="ROOT_PATH")
     database_url: str = Field(
         default="sqlite+pysqlite:///./local.db",
         alias="DATABASE_URL",
@@ -67,6 +68,18 @@ class Settings(BaseSettings):
             if normalized in {"0", "false", "no", "off", "release", "production"}:
                 return False
         return False
+
+    @field_validator("root_path", mode="before")
+    @classmethod
+    def normalize_root_path(cls, value: object) -> str:
+        if value is None:
+            return ""
+        normalized = str(value).strip()
+        if not normalized or normalized == "/":
+            return ""
+        if not normalized.startswith("/"):
+            normalized = f"/{normalized}"
+        return normalized.rstrip("/")
 
     @property
     def upload_path(self) -> Path:

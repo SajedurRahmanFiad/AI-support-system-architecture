@@ -393,6 +393,7 @@ This is a safe starting point:
 APP_NAME=B2B AI Support API
 APP_ENV=production
 DEBUG=false
+ROOT_PATH=
 DATABASE_URL=mysql+pymysql://cpaneluser_dbuser:YOUR_PASSWORD@localhost:3306/cpaneluser_dbname?charset=utf8mb4
 PLATFORM_API_TOKEN=replace-this-with-a-long-random-secret
 
@@ -1006,6 +1007,8 @@ If cPanel asks for a URL or domain:
 - choose the domain or subdomain where you want the API to live
 - a subdomain like `api.yourdomain.com` is a clean choice
 
+If your main site already runs WordPress on LiteSpeed, prefer a dedicated subdomain and keep the Python app outside `public_html`. A physical folder like `public_html/ai` often causes `https://your-domain.com/ai/` to show LiteSpeed `403 Forbidden` while deeper URLs fall back to the WordPress site instead of the Python app.
+
 ### Step 5. Open cPanel Terminal
 
 In cPanel, open `Terminal`.
@@ -1228,6 +1231,17 @@ Fix:
 - check `MAX_UPLOAD_BYTES`
 - make sure `storage/uploads` is writable
 - keep files within the hosting size limits
+
+#### Problem: `/ai/` shows LiteSpeed `403 Forbidden` and `/ai/api/health` shows the WordPress site or a WordPress 404 page
+
+Fix:
+
+- your requests are not reaching Passenger or the Python app
+- move the Python app source out of `public_html`, for example to `/home/yourcpaneluser/repositories/b2b-ai-support-api`
+- if `public_html/ai` exists from an earlier deploy, rename or remove that folder so WordPress and LiteSpeed stop treating `/ai` as a normal web directory
+- in cPanel Application Manager, point the app to the real project folder and restart it
+- use a dedicated subdomain like `api.yourdomain.com` if possible; it is more reliable than sharing a WordPress domain path
+- only set `ROOT_PATH=/ai` if your host really mounts the Python app under `/ai`
 
 #### Problem: voice notes are weak
 

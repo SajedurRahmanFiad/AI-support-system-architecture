@@ -23,6 +23,7 @@ def create_app() -> FastAPI:
         title=settings.app_name,
         version="0.1.0",
         debug=settings.debug,
+        root_path=settings.root_path,
         lifespan=lifespan,
     )
     app.add_middleware(
@@ -32,6 +33,17 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         allow_credentials=True,
     )
+
+    @app.get("/", include_in_schema=False)
+    def root() -> dict[str, str]:
+        return {
+            "status": "ok",
+            "app": settings.app_name,
+            "env": settings.app_env,
+            "health": "api/health",
+            "docs": "docs",
+        }
+
     app.include_router(api_router, prefix="/api")
     return app
 

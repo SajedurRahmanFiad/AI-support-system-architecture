@@ -9,6 +9,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
 from app.database import Base
+from app.json_utils import to_json_compatible
 
 
 class JSONText(TypeDecorator):
@@ -18,7 +19,7 @@ class JSONText(TypeDecorator):
     def process_bind_param(self, value: Any, dialect: Any) -> str | None:
         if value is None:
             return None
-        return json.dumps(value)
+        return json.dumps(to_json_compatible(value))
 
     def process_result_value(self, value: str | None, dialect: Any) -> Any:
         if value is None:
