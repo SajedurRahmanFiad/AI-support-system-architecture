@@ -243,6 +243,47 @@ The app uses two header types:
 - `X-Brand-Api-Key`
   Use this for normal brand-level operations like processing messages and uploading customer attachments.
 
+## IDs and values you will reuse in later calls
+
+Many requests in this API use values that were created by an earlier request. These are the most important ones:
+
+- `brand_id`
+  This is the numeric database ID of one business or tenant. If your brand is `My Shop` and the API returns `"id": 1`, then `1` is the `brand_id` for that business. You use it to keep data isolated so one brand cannot mix with another brand's knowledge, uploads, customers, or product images.
+- `X-Brand-Api-Key`
+  This is the secret API key for one specific brand. You get it when the brand is created or when the key is rotated. Send it in the request header for day-to-day brand operations.
+- `X-Platform-Token`
+  This is the platform-wide admin secret from your `.env`. Use it for platform tasks such as creating brands, managing knowledge, listing conversations, and processing job queues.
+- `attachment_id`
+  This is the ID returned by `POST /api/v1/uploads`. Put that ID inside `attachment_ids` when you later call `POST /api/v1/messages/process`.
+- `message_id`
+  This is the internal message record ID. You use it when sending feedback to `POST /api/v1/messages/{message_id}/feedback`.
+- `customer_id`
+  This is the internal customer record ID. You use it when reading one customer with `GET /api/v1/customers/{customer_id}`.
+- `conversation_id`
+  This is the internal conversation record ID. You use it for reading a conversation or changing handoff state.
+- `product_image_id`
+  This is the ID returned when you add a product image. You use it if you later delete that product image.
+- `job_id`
+  This is returned when you set `process_async=true` on some routes. You use it to track queued work in the jobs endpoints.
+
+The same value can appear in different places depending on the route:
+
+- JSON body: `"brand_id": 1`
+- multipart form data: `-F "brand_id=1"`
+- query string: `GET /api/v1/customers?brand_id=1`
+- path parameter: `POST /api/v1/brands/1/rules`
+
+## Recommended first-time API flow
+
+If you are using this API for the first time, the normal order is:
+
+1. Create a brand and save the returned `id` and `api_key`.
+2. Use that `id` as `brand_id` in all later calls for that brand.
+3. Add brand setup data such as rules, style examples, and knowledge documents.
+4. Upload customer files first if a message includes audio, images, or documents.
+5. Send the actual customer message to `POST /api/v1/messages/process`.
+6. Use conversation, customer, feedback, and jobs endpoints for monitoring and operations.
+
 ## Important API routes
 
 Base prefix:
@@ -251,31 +292,48 @@ Base prefix:
 /api
 ```
 
-Core routes:
+### Public route
 
-- `GET /api/health`
-- `POST /api/v1/brands`
-- `GET /api/v1/brands`
-- `PATCH /api/v1/brands/{brand_id}`
-- `POST /api/v1/brands/{brand_id}/rules`
-- `POST /api/v1/brands/{brand_id}/style-examples`
-- `POST /api/v1/knowledge/documents`
-- `POST /api/v1/knowledge/search`
-- `POST /api/v1/uploads`
-- `POST /api/v1/messages/process`
-- `POST /api/v1/messages/{message_id}/feedback`
-- `GET /api/v1/customers`
-- `GET /api/v1/customers/{customer_id}`
-- `GET /api/v1/conversations`
-- `GET /api/v1/conversations/{conversation_id}`
-- `POST /api/v1/conversations/{conversation_id}/handoff`
-- `POST /api/v1/conversations/{conversation_id}/release`
-- `POST /api/v1/products/images/add`
-- `POST /api/v1/products/recognize`
-- `GET /api/v1/products/images`
-- `DELETE /api/v1/products/images/{product_image_id}`
-- `GET /api/v1/jobs`
-- `POST /api/v1/jobs/process-pending`
+| Route | What it does | Main inputs |
+|---|---|---|
+| `GET /api/health` | Quick health check for app, environment, and provider status | No auth, no body |
+
+### Platform and admin routes (`X-Platform-Token`)
+
+| Route | What it does | Main inputs |
+|---|---|---|
+| `POST /api/v1/brands` | Create a new brand and return its `id` and `api_key` | JSON body with `name`, `slug`, and optional brand settings |
+| `GET /api/v1/brands` | List all brands | No body |
+| `GET /api/v1/brands/{brand_id}` | Read one brand by numeric ID | Path `brand_id` |
+| `PATCH /api/v1/brands/{brand_id}` | Update brand configuration | Path `brand_id`, JSON body with only the fields you want to change |
+| `POST /api/v1/brands/{brand_id}/reset-api-key` | Rotate a brand API key | Path `brand_id` |
+| `GET /api/v1/brands/{brand_id}/rules` | List hard rules for a brand | Path `brand_id` |
+| `POST /api/v1/brands/{brand_id}/rules` | Add one hard rule | Path `brand_id`, JSON body with `category`, `title`, `content`, `handoff_on_match`, `priority` |
+| `GET /api/v1/brands/{brand_id}/style-examples` | List saved style examples | Path `brand_id` |
+| `POST /api/v1/brands/{brand_id}/style-examples` | Add one approved example reply | Path `brand_id`, JSON body with `title`, `trigger_text`, `ideal_reply`, `notes`, `priority` |
+| `POST /api/v1/knowledge/documents` | Add one knowledge document for a brand | JSON body with `brand_id`, `title`, `source_type`, `source_reference`, `raw_text`, `metadata`, `process_async` |
+| `GET /api/v1/knowledge/documents?brand_id=1` | List knowledge documents for one brand | Query `brand_id` |
+| `POST /api/v1/knowledge/search` | Test or debug knowledge retrieval manually | JSON body with `brand_id`, `query`, `top_k` |
+| `POST /api/v1/messages/{message_id}/feedback` | Save correction or QA feedback on an AI reply | Path `message_id`, JSON body with `feedback_type`, `corrected_reply`, `notes`, `metadata` |
+| `GET /api/v1/customers?brand_id=1` | List customers for one brand | Query `brand_id` |
+| `GET /api/v1/customers/{customer_id}` | Read one customer and its facts | Path `customer_id` |
+| `GET /api/v1/conversations?brand_id=1` | List conversations for one brand | Query `brand_id` |
+| `GET /api/v1/conversations/{conversation_id}` | Read one conversation with messages and attachments | Path `conversation_id` |
+| `POST /api/v1/conversations/{conversation_id}/handoff` | Mark a conversation as human-owned | Path `conversation_id`, optional JSON body with `owner_name` and `notes` |
+| `POST /api/v1/conversations/{conversation_id}/release` | Return a handed-off conversation back to AI ownership | Path `conversation_id` |
+| `GET /api/v1/jobs` | List recent background jobs | Optional query `status_filter` |
+| `POST /api/v1/jobs/process-pending` | Process queued jobs now | JSON body with `limit` |
+
+### Brand runtime routes (`X-Brand-Api-Key` or `X-Platform-Token`)
+
+| Route | What it does | Main inputs |
+|---|---|---|
+| `POST /api/v1/uploads` | Save one customer attachment and return its `attachment_id` | multipart form with `brand_id` and `file` |
+| `POST /api/v1/messages/process` | Main message entry point for text, images, and voice notes | JSON body with `brand_id`, `customer_external_id`, `conversation_external_id`, `channel`, `text`, `attachment_ids`, optional metadata fields |
+| `POST /api/v1/products/images/add` | Add one reference image for product recognition | multipart form with `brand_id`, `product_name`, `category`, `metadata`, and `file` |
+| `POST /api/v1/products/recognize` | Match a customer image against the brand's product catalog | multipart form with `brand_id`, `customer_text`, and `file` |
+| `GET /api/v1/products/images?brand_id=1` | List product images already stored for one brand | Query `brand_id` |
+| `DELETE /api/v1/products/images/{product_image_id}?brand_id=1` | Delete one stored product image | Path `product_image_id`, query `brand_id` |
 
 ## Local quick start
 
@@ -469,15 +527,95 @@ This happens through conversation updates and summaries.
 
 ## Simple usage examples
 
-### 1. Create a brand
+The numbered examples below reuse the same brand. In these examples, `brand_id=1` means "the brand whose internal ID is `1` in the database."
+
+### 1. Create a brand and save the returned values
+
+You can create a brand from the CLI:
 
 ```powershell
 python -m app.cli create-brand --name "My Shop" --slug my-shop
 ```
 
-Save the printed API key. That key belongs to that business.
+You can also create it through the API:
 
-### 2. Add a knowledge document
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/brands \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "My Shop",
+    "slug": "my-shop",
+    "default_language": "bn-BD",
+    "tone_name": "Helpful sales assistant"
+  }'
+```
+
+Expected response shape:
+
+```json
+{
+  "id": 1,
+  "name": "My Shop",
+  "slug": "my-shop",
+  "api_key": "brand_xxxxxxxxx"
+}
+```
+
+How to use these values:
+
+- `id` is the `brand_id` you reuse later in knowledge, uploads, messages, product images, and list queries.
+- `api_key` is the secret you send as `X-Brand-Api-Key` for normal brand-level requests.
+- `slug` is a unique text identifier for the brand. It is mainly for human-friendly naming, not for later auth.
+
+If you ever forget the `brand_id`, list brands with `GET /api/v1/brands` using your `X-Platform-Token`.
+
+### 2. Add a hard rule for that brand
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/brands/1/rules \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "category": "returns",
+    "title": "Refunds need approval",
+    "content": "Do not promise a refund until a human agent verifies the order.",
+    "handoff_on_match": true,
+    "priority": 10
+  }'
+```
+
+How to use these values:
+
+- The `1` in `/brands/1/rules` is the `brand_id` returned when the brand was created.
+- `category` is your own label for organizing rules such as `returns`, `payments`, or `legal`.
+- `content` is the actual rule the assistant should follow.
+- `handoff_on_match=true` tells the system this rule is serious enough to push the conversation toward human handoff.
+- `priority` controls rule order. Lower numbers are checked earlier.
+
+### 3. Add a style example
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/brands/1/style-examples \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "title": "Greeting for first reply",
+    "trigger_text": "Customer asks if a product is available",
+    "ideal_reply": "Assalamu alaikum. Yes, this item is available. Please tell me which color or size you need.",
+    "notes": "Keep it warm, short, and sales-friendly.",
+    "priority": 20
+  }'
+```
+
+How to use these values:
+
+- `trigger_text` describes the situation where this example should be relevant.
+- `ideal_reply` is the approved response style you want the assistant to imitate.
+- `notes` is optional extra guidance for reviewers or future editors.
+- `priority` works like rule priority. Lower numbers are stronger examples.
+
+### 4. Add a knowledge document
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/knowledge/documents \
@@ -487,11 +625,47 @@ curl -X POST http://127.0.0.1:8000/api/v1/knowledge/documents \
     "brand_id": 1,
     "title": "Delivery Policy",
     "source_type": "policy",
-    "raw_text": "Inside Dhaka delivery takes 1-2 days. Outside Dhaka delivery takes 2-4 days."
+    "source_reference": "internal-delivery-policy-v1",
+    "raw_text": "Inside Dhaka delivery takes 1-2 days. Outside Dhaka delivery takes 2-4 days.",
+    "metadata": {
+      "team": "operations"
+    },
+    "process_async": false
   }'
 ```
 
-### 3. Upload a customer attachment
+How to use these values:
+
+- `brand_id` links this document to exactly one business. Here, `1` means this knowledge belongs only to brand `1`.
+- `title` is a human-readable label so you can recognize the document later.
+- `source_type` is a free label such as `faq`, `policy`, `catalog`, or `pricing`.
+- `source_reference` is optional and useful when you want to track the original source document or version.
+- `raw_text` is the real business knowledge the system will search later.
+- `metadata` is optional structured information for your own reporting or filtering.
+- `process_async=true` will queue indexing as a background job instead of doing it in the request.
+
+### 5. Search the knowledge base manually
+
+This is useful when you want to test whether a document is searchable before sending live messages.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/knowledge/search \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "brand_id": 1,
+    "query": "How long does delivery take outside Dhaka?",
+    "top_k": 3
+  }'
+```
+
+How to use these values:
+
+- `brand_id` keeps the search inside one brand's knowledge base.
+- `query` is the customer-style question you want to test against the knowledge store.
+- `top_k` controls how many top matching chunks come back. The default is `5`.
+
+### 6. Upload a customer attachment
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/uploads \
@@ -500,7 +674,28 @@ curl -X POST http://127.0.0.1:8000/api/v1/uploads \
   -F "file=@voice-note.ogg"
 ```
 
-### 4. Process a message
+Expected response shape:
+
+```json
+{
+  "attachment": {
+    "id": 7,
+    "attachment_type": "audio",
+    "original_filename": "voice-note.ogg"
+  }
+}
+```
+
+How to use these values:
+
+- `brand_id=1` means this uploaded file belongs to brand `1`.
+- `file=@voice-note.ogg` tells `curl` to upload the local file.
+- The returned `attachment.id` is the value you later place inside `attachment_ids` in the message-processing call.
+- Use this upload route first whenever a customer sends audio, an image, or another file that should be attached to a message.
+
+### 7. Process a message
+
+Use the same `brand_id` from brand creation here. If you uploaded attachments first, put the returned attachment IDs inside `attachment_ids`.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
@@ -517,7 +712,42 @@ curl -X POST http://127.0.0.1:8000/api/v1/messages/process \
   }'
 ```
 
-### 5. Add a product image for recognition
+This sample shows a text-only message. If the upload step returned `attachment.id = 7`, change `attachment_ids` to `[7]`.
+
+How to use these values:
+
+- `brand_id` says which business should answer this message.
+- `customer_external_id` should be the stable customer ID from your source platform. Use the same value again on later messages from the same customer.
+- `customer_name` is optional and helps memory and personalization.
+- `conversation_external_id` should be the stable thread ID from the source platform. Reuse it for follow-up messages in the same chat thread.
+- `channel` is your own channel label such as `facebook`, `whatsapp`, `instagram`, `website`, or `api`.
+- `text` is the actual customer message. It can be empty if the message is attachment-only.
+- `attachment_ids` must contain attachment IDs returned by the uploads endpoint. Do not put filenames here. If there is no attachment, send an empty array.
+- `process_async=true` is also available if you want this request to return a `job_id` instead of waiting for the reply immediately.
+
+### 8. Save feedback on a reply
+
+The message processing response can include `outbound_message_id`. That value is the `message_id` you use here.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/messages/42/feedback \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "feedback_type": "correction",
+    "corrected_reply": "Delivery outside Dhaka usually takes 2-4 days.",
+    "notes": "Shorter and more direct reply preferred."
+  }'
+```
+
+How to use these values:
+
+- `42` is the internal `message_id` of the reply you want to review.
+- `feedback_type` is a label such as `correction`, `approval`, or another review tag you want to store.
+- `corrected_reply` is optional and useful when a reviewer wants to show the better answer.
+- `notes` is optional reviewer context.
+
+### 9. Add a product image for recognition
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/products/images/add \
@@ -529,7 +759,15 @@ curl -X POST http://127.0.0.1:8000/api/v1/products/images/add \
   -F "file=@panjabi-front.jpg"
 ```
 
-### 6. Recognize a product from a customer image
+How to use these values:
+
+- `brand_id` says which catalog this product image belongs to.
+- `product_name` is the human-readable product name you want returned in matches.
+- `category` is a free label such as `clothing`, `shoes`, or `electronics`.
+- `metadata` must be valid JSON text because multipart form fields are strings. This is the right place for SKU, color, size, model, or other structured product data.
+- `file` must be an image file. Non-image uploads are rejected here.
+
+### 10. Recognize a product from a customer image
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/products/recognize \
@@ -538,6 +776,76 @@ curl -X POST http://127.0.0.1:8000/api/v1/products/recognize \
   -F "customer_text=Do you have this in black?" \
   -F "file=@customer-photo.jpg"
 ```
+
+How to use these values:
+
+- `brand_id` keeps recognition inside one brand's catalog only.
+- `customer_text` is optional extra context. It can improve matching or help later orchestration.
+- `file` is the customer image you want to compare with the catalog.
+
+### 11. Read customers and conversations
+
+List customers for one brand:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/customers?brand_id=1" \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN"
+```
+
+List conversations for one brand:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/conversations?brand_id=1" \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN"
+```
+
+How to use these values:
+
+- `brand_id` is sent as a query parameter on these list routes.
+- Use the returned `customer_id` or `conversation_id` when opening one specific record later.
+
+### 12. Hand off or release a conversation
+
+Hand off a conversation to a human:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/conversations/15/handoff \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "owner_name": "Senior Agent"
+  }'
+```
+
+Release it back to AI:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/conversations/15/release \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN"
+```
+
+How to use these values:
+
+- `15` is the internal `conversation_id`.
+- `owner_name` is optional and lets you record who took over the conversation.
+
+### 13. Process pending jobs
+
+If you used `process_async=true`, run pending jobs like this:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/jobs/process-pending \
+  -H "X-Platform-Token: YOUR_PLATFORM_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "limit": 10
+  }'
+```
+
+How to use these values:
+
+- `limit` is the maximum number of queued jobs to process in this run.
+- This route is useful for cron, manual queue draining, or cPanel background processing.
 
 ## Voice-note limitations and smooth-workflow plan
 
