@@ -1,0 +1,49 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class KnowledgeDocumentCreate(BaseModel):
+    brand_id: int
+    title: str
+    source_type: str = "faq"
+    source_reference: str | None = None
+    raw_text: str
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    process_async: bool = False
+
+
+class KnowledgeDocumentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    brand_id: int
+    title: str
+    source_type: str
+    source_reference: str | None
+    raw_text: str
+    metadata_json: dict[str, Any] | None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeSearchRequest(BaseModel):
+    brand_id: int
+    query: str
+    top_k: int = 5
+
+
+class KnowledgeSearchHit(BaseModel):
+    chunk_id: int
+    document_id: int
+    title: str
+    content: str
+    score: float
+
+
+class KnowledgeSearchResponse(BaseModel):
+    hits: list[KnowledgeSearchHit]

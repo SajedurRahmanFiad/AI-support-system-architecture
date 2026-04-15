@@ -1,0 +1,307 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+from fastapi import HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.orm import Session, joinedload
+
+from app import models
+from app.api.schemas.messages import MessageProcessRequest, MessageProcessResponse
+from app.config import get_settings
+from app.services import knowledge, memory, moderation
+from app.services.brand_service import get_brand_or_404
+from app.services.llm.base import AttachmentInsight
+from app.services.llm.factory import build_llm_provider
+from app.services.storage import read_file_bytes
+
+
+class MessageProcessor:
+    def __init__(self, db: Session) -> None:
+        self.db = db
+        self.settings = get_settings()
+        self.provider = build_llm_provider()
+
+    def process(self, payload: MessageProcessRequest) -> MessageProcessResponse:
+        brand = get_brand_or_404(self.db, payload.brand_id)
+        if not brand.active:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Brand is inactive.")
+
+        duplicate = None
+        if payload.external_message_id:
+            duplicate = self.db.scalar(
+                select(models.Message).where(
+                    models.Message.brand_id == payload.brand_id,
+                    models.Message.external_message_id == payload.external_message_id,
+                )
+            )
+        if duplicate:
+            return MessageProcessResponse(
+                status=duplicate.status,
+                conversation_id=duplicate.conversation_id,
+                customer_id=duplicate.customer_id,
+                inbound_message_id=duplicate.id,
+            )
+
+        customer = self._get_or_create_customer(brand.id, payload)
+        conversation = self._get_or_create_conversation(brand.id, customer.id, payload)
+
+        inbound_message = models.Message(
+            brand_id=brand.id,
+            conversation_id=conversation.id,
+            customer_id=customer.id,
+            external_message_id=payload.external_message_id,
+            role="customer",
+            source=payload.channel,
+            text=payload.text.strip(),
+            status="received",
+        )
+        self.db.add(inbound_message)
+        self.db.flush()
+
+        attachments = self._bind_attachments(payload.attachment_ids, brand.id, conversation.id, customer.id, inbound_message.id)
+        attachment_insights = self._prepare_attachment_insights(attachments)
+
+        hydrated_brand = self.db.scalar(
+            select(models.Brand)
+            .options(joinedload(models.Brand.rules), joinedload(models.Brand.style_examples))
+            .where(models.Brand.id == brand.id)
+        ) or brand
+        brand_context = memory.build_brand_context(hydrated_brand)
+        history = memory.fetch_recent_history(self.db, conversation.id)[:-1]
+        customer_snapshot = memory.build_customer_snapshot(customer)
+
+        moderation_text = " ".join(
+            [payload.text]
+            + [item.summary for item in attachment_insights]
+            + [item.transcript or "" for item in attachment_insights]
+            + [item.extracted_text or "" for item in attachment_insights]
+        ).strip()
+        risk = moderation.inspect_customer_message(moderation_text, hydrated_brand.rules)
+        if conversation.owner_type == "human":
+            risk.force_handoff = True
+            risk.reason = risk.reason or "Conversation is already assigned to a human."
+            risk.flags.append("conversation-owned-by-human")
+
+        knowledge_hits = knowledge.search_knowledge(
+            self.db,
+            self.provider,
+            brand.id,
+            moderation_text or payload.text,
+        )
+
+        if risk.force_handoff:
+            decision_status = "handoff"
+            confidence = 0.99
+            handoff_reason = risk.reason or "Human review required."
+            reply_text = hydrated_brand.fallback_handoff_message
+            customer_updates: dict = {}
+            flags = risk.flags
+            used_sources: list[dict] = []
+            token_usage: dict = {}
+        else:
+            decision = self.provider.generate_reply(
+                brand=brand_context,
+                customer=customer_snapshot,
+                history=history,
+                incoming_text=payload.text,
+                knowledge=knowledge_hits,
+                attachment_insights=attachment_insights,
+            )
+            decision_status = decision.status
+            confidence = decision.confidence
+            handoff_reason = decision.handoff_reason
+            customer_updates = decision.customer_updates
+            flags = list(dict.fromkeys(risk.flags + decision.flags))
+            used_sources = [
+                {
+                    "chunk_id": item.chunk_id,
+                    "document_id": item.document_id,
+                    "title": item.title,
+                    "score": item.score,
+                }
+                for item in knowledge_hits
+                if not decision.used_knowledge_ids or item.chunk_id in decision.used_knowledge_ids
+            ]
+            token_usage = decision.token_usage
+
+            if confidence < self.settings.handoff_confidence_threshold:
+                decision_status = "handoff"
+                handoff_reason = handoff_reason or "Low confidence reply needs human review."
+
+            if decision_status == "handoff":
+                reply_text = hydrated_brand.fallback_handoff_message
+            else:
+                reply_text = decision.reply_text.strip() or hydrated_brand.fallback_handoff_message
+
+        inbound_message.status = "processed" if decision_status != "handoff" else "handoff"
+        inbound_message.flags_json = flags
+        inbound_message.handoff_reason = handoff_reason
+
+        if decision_status == "handoff":
+            conversation.status = "handoff"
+            conversation.owner_type = "human"
+        else:
+            conversation.status = "open"
+            conversation.owner_type = "ai"
+
+        now = datetime.now(timezone.utc)
+        conversation.last_message_at = now
+        customer.last_seen_at = now
+
+        outbound_message = models.Message(
+            brand_id=brand.id,
+            conversation_id=conversation.id,
+            customer_id=customer.id,
+            role="assistant",
+            source=self.provider.provider_name,
+            text=reply_text,
+            status=decision_status,
+            confidence=confidence,
+            handoff_reason=handoff_reason,
+            used_sources_json=used_sources,
+            flags_json=flags,
+            token_usage_json=token_usage,
+        )
+        self.db.add(outbound_message)
+        self.db.flush()
+
+        memory.apply_customer_updates(self.db, customer, customer_updates)
+        memory.maybe_refresh_summary(self.db, self.provider, brand_context, customer, conversation)
+
+        audit = models.AuditLog(
+            brand_id=brand.id,
+            conversation_id=conversation.id,
+            message_id=outbound_message.id,
+            event_type="reply_generated",
+            request_json=payload.model_dump(),
+            response_json={
+                "status": decision_status,
+                "reply_text": reply_text,
+                "confidence": confidence,
+                "handoff_reason": handoff_reason,
+                "flags": flags,
+                "used_sources": used_sources,
+            },
+        )
+        self.db.add_all([customer, conversation, inbound_message, outbound_message, audit])
+        self.db.commit()
+
+        return MessageProcessResponse(
+            status=decision_status,
+            conversation_id=conversation.id,
+            customer_id=customer.id,
+            inbound_message_id=inbound_message.id,
+            outbound_message_id=outbound_message.id,
+            reply_text=reply_text,
+            confidence=confidence,
+            handoff_reason=handoff_reason,
+            flags=flags,
+            used_sources=used_sources,
+            customer_updates=customer_updates,
+        )
+
+    def _get_or_create_customer(self, brand_id: int, payload: MessageProcessRequest) -> models.Customer:
+        customer = self.db.scalar(
+            select(models.Customer).where(
+                models.Customer.brand_id == brand_id,
+                models.Customer.external_id == payload.customer_external_id,
+            )
+        )
+        if customer:
+            if payload.customer_name and not customer.display_name:
+                customer.display_name = payload.customer_name
+            if payload.customer_language and not customer.language:
+                customer.language = payload.customer_language
+            self.db.add(customer)
+            self.db.flush()
+            return customer
+
+        customer = models.Customer(
+            brand_id=brand_id,
+            external_id=payload.customer_external_id,
+            display_name=payload.customer_name,
+            language=payload.customer_language,
+            profile_json=payload.metadata.get("customer_profile", {}),
+        )
+        self.db.add(customer)
+        self.db.flush()
+        return customer
+
+    def _get_or_create_conversation(self, brand_id: int, customer_id: int, payload: MessageProcessRequest) -> models.Conversation:
+        conversation = self.db.scalar(
+            select(models.Conversation).where(
+                models.Conversation.brand_id == brand_id,
+                models.Conversation.external_conversation_id == payload.conversation_external_id,
+            )
+        )
+        if conversation:
+            return conversation
+        conversation = models.Conversation(
+            brand_id=brand_id,
+            customer_id=customer_id,
+            channel=payload.channel,
+            external_conversation_id=payload.conversation_external_id,
+            metadata_json=payload.metadata,
+            last_message_at=datetime.now(timezone.utc),
+        )
+        self.db.add(conversation)
+        self.db.flush()
+        return conversation
+
+    def _bind_attachments(
+        self,
+        attachment_ids: list[int],
+        brand_id: int,
+        conversation_id: int,
+        customer_id: int,
+        message_id: int,
+    ) -> list[models.Attachment]:
+        if not attachment_ids:
+            return []
+        attachments = list(
+            self.db.scalars(
+                select(models.Attachment).where(
+                    models.Attachment.id.in_(attachment_ids),
+                    models.Attachment.brand_id == brand_id,
+                )
+            )
+        )
+        if len(attachments) != len(set(attachment_ids)):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="One or more attachments were not found.")
+
+        for attachment in attachments:
+            attachment.conversation_id = conversation_id
+            attachment.customer_id = customer_id
+            attachment.message_id = message_id
+            self.db.add(attachment)
+        self.db.flush()
+        return attachments
+
+    def _prepare_attachment_insights(self, attachments: list[models.Attachment]) -> list[AttachmentInsight]:
+        insights: list[AttachmentInsight] = []
+        for attachment in attachments:
+            if attachment.attachment_type in {"image", "audio"} and not (attachment.transcript or attachment.extracted_text):
+                analyzed = self.provider.analyze_attachment(
+                    attachment_type=attachment.attachment_type,
+                    mime_type=attachment.mime_type,
+                    data=read_file_bytes(attachment.storage_path),
+                )
+                attachment.transcript = analyzed.transcript
+                attachment.extracted_text = analyzed.extracted_text
+                metadata = attachment.metadata_json or {}
+                metadata["summary"] = analyzed.summary
+                attachment.metadata_json = metadata
+                self.db.add(attachment)
+                insight = analyzed
+            else:
+                insight = AttachmentInsight(
+                    attachment_id=attachment.id,
+                    attachment_type=attachment.attachment_type,
+                    summary=(attachment.metadata_json or {}).get("summary", f"{attachment.attachment_type} attachment received."),
+                    transcript=attachment.transcript,
+                    extracted_text=attachment.extracted_text,
+                )
+            insight.attachment_id = attachment.id
+            insights.append(insight)
+        return insights
