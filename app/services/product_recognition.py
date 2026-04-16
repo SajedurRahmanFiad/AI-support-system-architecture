@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import math
 from typing import Any
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
+from app.config import get_settings
 from app.services.llm.factory import build_llm_provider
 
 
@@ -185,6 +187,11 @@ class ProductRecognizer:
         product_img = self.db.get(models.ProductImage, product_image_id)
         if not product_img or product_img.brand_id != self.brand_id:
             return False
+        storage_path = Path(product_img.storage_path)
+        if not storage_path.is_absolute():
+            storage_path = get_settings().upload_path / storage_path
+        if storage_path.exists():
+            storage_path.unlink(missing_ok=True)
         self.db.delete(product_img)
         self.db.commit()
         return True

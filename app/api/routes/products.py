@@ -1,9 +1,13 @@
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Security, UploadFile, File, Form, status
+from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
+from app import models
 from app.api.deps import brand_token_header, platform_token_header
+from app.api.schemas.products import ProductImageUpdate
 from app.database import get_db
 from app.services.brand_service import require_brand_access
 from app.services.product_recognition import ProductRecognizer
@@ -12,6 +16,13 @@ from app.config import get_settings
 import json
 
 router = APIRouter(prefix="/v1/products")
+
+
+def _resolve_storage_path(storage_path: str) -> Path:
+    path = Path(storage_path)
+    if path.is_absolute():
+        return path
+    return get_settings().upload_path / path
 
 
 @router.post("/images/add")
@@ -136,3 +147,58 @@ def delete_product_image(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product image not found")
 
     return {"status": "Product image deleted"}
+
+
+@router.patch("/images/{product_image_id}")
+def update_product_image(
+    product_image_id: int,
+    payload: ProductImageUpdate,
+    db: Session = Depends(get_db),
+    brand_token: str | None = Security(brand_token_header),
+    platform_token: str | None = Security(platform_token_header),
+) -> dict[str, Any]:
+    product_img = db.get(models.ProductImage, product_image_id)
+    if not product_img:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product image not found")
+    require_brand_access(db, product_img.brand_id, brand_token, platform_token, get_settings().platform_api_token)
+
+    data = payload.model_dump(exclude_unset=True)
+    if "product_name" in data:
+        product_img.product_name = data["product_name"]
+    if "category" in data:
+        product_img.product_category = data["category"]
+    if "metadata" in data:
+        product_img.product_metadata = data["metadata"]
+    db.add(product_img)
+    db.commit()
+    db.refresh(product_img)
+    return {
+        "id": product_img.id,
+        "product_name": product_img.product_name,
+        "category": product_img.product_category,
+        "storage_path": product_img.storage_path,
+        "metadata": product_img.product_metadata or {},
+        "created_at": product_img.created_at,
+    }
+
+
+@router.get("/images/{product_image_id}/download")
+def download_product_image(
+    product_image_id: int,
+    brand_id: int,
+    db: Session = Depends(get_db),
+    brand_token: str | None = Security(brand_token_header),
+    platform_token: str | None = Security(platform_token_header),
+) -> FileResponse:
+    require_brand_access(db, brand_id, brand_token, platform_token, get_settings().platform_api_token)
+    product_img = db.get(models.ProductImage, product_image_id)
+    if not product_img or product_img.brand_id != brand_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product image not found")
+    file_path = _resolve_storage_path(product_img.storage_path)
+    if not file_path.exists():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Stored file not found")
+    return FileResponse(
+        path=file_path,
+        media_type=(product_img.product_metadata or {}).get("mime_type", "image/jpeg"),
+        filename=file_path.name,
+    )

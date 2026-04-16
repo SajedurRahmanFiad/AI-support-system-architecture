@@ -16,6 +16,18 @@ class KnowledgeDocumentCreate(BaseModel):
     process_async: bool = False
 
 
+class KnowledgeDocumentUpdate(BaseModel):
+    title: str | None = None
+    source_type: str | None = None
+    source_reference: str | None = None
+    raw_text: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class KnowledgeReindexRequest(BaseModel):
+    process_async: bool = False
+
+
 class KnowledgeDocumentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

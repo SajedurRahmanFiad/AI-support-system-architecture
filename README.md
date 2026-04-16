@@ -306,6 +306,8 @@ Base prefix:
 | `GET /api/v1/brands` | List all brands | No body |
 | `GET /api/v1/brands/{brand_id}` | Read one brand by numeric ID | Path `brand_id` |
 | `PATCH /api/v1/brands/{brand_id}` | Update brand configuration | Path `brand_id`, JSON body with only the fields you want to change |
+| `GET /api/v1/brands/{brand_id}/prompt-config` | Read only the prompt and tone config for one brand | Path `brand_id`, brand API key or platform token |
+| `PATCH /api/v1/brands/{brand_id}/prompt-config` | Update only the prompt and tone config for one brand | Path `brand_id`, JSON body with prompt fields, brand API key or platform token |
 | `POST /api/v1/brands/{brand_id}/reset-api-key` | Rotate a brand API key | Path `brand_id` |
 | `GET /api/v1/brands/{brand_id}/rules` | List hard rules for a brand | Path `brand_id` |
 | `POST /api/v1/brands/{brand_id}/rules` | Add one hard rule | Path `brand_id`, JSON body with `category`, `title`, `content`, `handoff_on_match`, `priority` |
@@ -615,6 +617,38 @@ How to use these values:
 - `ideal_reply` is the approved response style you want the assistant to imitate.
 - `notes` is optional extra guidance for reviewers or future editors.
 - `priority` works like rule priority. Lower numbers are stronger examples.
+
+### 3A. Update prompt and tone config directly
+
+If you want a wrapper or admin panel to update only the prompt-shaping fields, use:
+
+- `GET /api/v1/brands/{brand_id}/prompt-config`
+- `PATCH /api/v1/brands/{brand_id}/prompt-config`
+
+This route accepts:
+
+- `X-Brand-Api-Key`
+- or `X-Platform-Token`
+
+Example:
+
+```bash
+curl -X PATCH http://127.0.0.1:8000/api/v1/brands/1/prompt-config \
+  -H "X-Brand-Api-Key: brand_xxxxxxxxx" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tone_name": "Natural Bangladeshi sales assistant",
+    "tone_instructions": "Reply in everyday Bangladeshi Bangla. Keep replies short, warm, and practical. Avoid robotic wording.",
+    "public_reply_guidelines": "Keep most replies within 1 to 3 short sentences. Ask one follow-up question at a time.",
+    "fallback_handoff_message": "একজন মানুষ টিমমেট অল্প সময়ের মধ্যে উত্তর দেবে।"
+  }'
+```
+
+Repo templates you can copy and adapt:
+
+- `templates/prompt-config/brand-prompt-config.example.json`
+- `templates/prompt-config/tone_instructions.bn-BD.example.txt`
+- `templates/prompt-config/public_reply_guidelines.bn-BD.example.txt`
 
 ### 4. Add a knowledge document
 
@@ -1009,6 +1043,13 @@ If cPanel asks for a URL or domain:
 
 If your main site already runs WordPress on LiteSpeed, prefer a dedicated subdomain and keep the Python app outside `public_html`. A physical folder like `public_html/ai` often causes `https://your-domain.com/ai/` to show LiteSpeed `403 Forbidden` while deeper URLs fall back to the WordPress site instead of the Python app.
 
+If your host uses LiteSpeed + CloudLinux and a full subdomain root still does not serve the repo cleanly, copy these repo templates into the subdomain document root and edit the placeholder paths:
+
+- `deploy/cpanel-subdomain-root/passenger_wsgi.py`
+- `deploy/cpanel-subdomain-root/.htaccess.example`
+
+That pattern keeps the real app in your Git-managed repo while the subdomain document root only contains a small Passenger shim.
+
 ### Step 5. Open cPanel Terminal
 
 In cPanel, open `Terminal`.
@@ -1242,6 +1283,17 @@ Fix:
 - in cPanel Application Manager, point the app to the real project folder and restart it
 - use a dedicated subdomain like `api.yourdomain.com` if possible; it is more reliable than sharing a WordPress domain path
 - only set `ROOT_PATH=/ai` if your host really mounts the Python app under `/ai`
+
+#### Problem: the app is on its own subdomain, but `/` shows a directory index, LiteSpeed `403`, or the request hangs even though Python workers start
+
+Fix:
+
+- keep the real repo outside `public_html`, for example `/home/yourcpaneluser/repositories/b2b-ai-support-api`
+- put a Passenger shim in the subdomain document root using:
+- `deploy/cpanel-subdomain-root/passenger_wsgi.py`
+- `deploy/cpanel-subdomain-root/.htaccess.example`
+- update the placeholder paths in both files to your real cPanel username, repo path, subdomain document root, and Python virtualenv path
+- restart the app or touch `tmp/restart.txt` in the subdomain document root
 
 #### Problem: voice notes are weak
 

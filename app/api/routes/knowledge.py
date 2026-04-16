@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 
 from app import models
@@ -7,11 +7,14 @@ from app.api.schemas.jobs import JobOut
 from app.api.schemas.knowledge import (
     KnowledgeDocumentCreate,
     KnowledgeDocumentOut,
+    KnowledgeDocumentUpdate,
+    KnowledgeReindexRequest,
     KnowledgeSearchHit,
     KnowledgeSearchRequest,
     KnowledgeSearchResponse,
 )
 from app.services import knowledge
+from app.services.brand_service import get_brand_or_404
 from app.services.jobs import enqueue_job
 from app.services.llm.factory import build_llm_provider
 
@@ -50,6 +53,65 @@ def list_documents(brand_id: int, db: DbSession) -> list[models.KnowledgeDocumen
             .order_by(models.KnowledgeDocument.created_at.desc())
         )
     )
+
+
+@router.get("/documents/{document_id}", response_model=KnowledgeDocumentOut)
+def get_document(document_id: int, db: DbSession) -> models.KnowledgeDocument:
+    document = db.get(models.KnowledgeDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    return document
+
+
+@router.patch("/documents/{document_id}", response_model=KnowledgeDocumentOut)
+def update_document(payload: KnowledgeDocumentUpdate, document_id: int, db: DbSession) -> models.KnowledgeDocument:
+    document = db.get(models.KnowledgeDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+
+    changed_fields = payload.model_dump(exclude_unset=True)
+    reindex_needed = False
+    for field, value in changed_fields.items():
+        if field == "metadata":
+            document.metadata_json = value
+        else:
+            setattr(document, field, value)
+        if field in {"title", "raw_text", "metadata"}:
+            reindex_needed = True
+
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+
+    if reindex_needed:
+        return knowledge.index_document(db, build_llm_provider(), document)
+    return document
+
+
+@router.delete("/documents/{document_id}")
+def delete_document(document_id: int, db: DbSession) -> dict[str, str]:
+    document = db.get(models.KnowledgeDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    db.delete(document)
+    db.commit()
+    return {"status": "deleted"}
+
+
+@router.post("/documents/{document_id}/reindex", response_model=KnowledgeDocumentOut)
+def reindex_document(document_id: int, payload: KnowledgeReindexRequest, db: DbSession) -> models.KnowledgeDocument:
+    document = db.get(models.KnowledgeDocument, document_id)
+    if not document:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Document not found.")
+    get_brand_or_404(db, document.brand_id)
+    if payload.process_async:
+        document.status = "queued"
+        db.add(document)
+        db.commit()
+        db.refresh(document)
+        enqueue_job(db, "reindex_document", {"document_id": document.id}, document.brand_id)
+        return document
+    return knowledge.index_document(db, build_llm_provider(), document)
 
 
 @router.post("/search", response_model=KnowledgeSearchResponse)

@@ -10,6 +10,10 @@ class AttachmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    brand_id: int
+    conversation_id: int | None
+    customer_id: int | None
+    message_id: int | None
     attachment_type: str
     mime_type: str
     original_filename: str | None
@@ -21,6 +25,7 @@ class AttachmentOut(BaseModel):
     analysis_confidence: float | None
     metadata_json: dict[str, Any] | None
     created_at: datetime
+    updated_at: datetime
 
 
 class MessageOut(BaseModel):

@@ -29,6 +29,14 @@ class BrandUpdate(BaseModel):
     settings: dict[str, Any] | None = None
 
 
+class BrandPromptConfigUpdate(BaseModel):
+    default_language: str | None = None
+    tone_name: str | None = None
+    tone_instructions: str | None = None
+    fallback_handoff_message: str | None = None
+    public_reply_guidelines: str | None = None
+
+
 class BrandRuleCreate(BaseModel):
     category: str = "general"
     title: str
@@ -37,12 +45,28 @@ class BrandRuleCreate(BaseModel):
     priority: int = 100
 
 
+class BrandRuleUpdate(BaseModel):
+    category: str | None = None
+    title: str | None = None
+    content: str | None = None
+    handoff_on_match: bool | None = None
+    priority: int | None = None
+
+
 class StyleExampleCreate(BaseModel):
     title: str
     trigger_text: str
     ideal_reply: str
     notes: str | None = None
     priority: int = 100
+
+
+class StyleExampleUpdate(BaseModel):
+    title: str | None = None
+    trigger_text: str | None = None
+    ideal_reply: str | None = None
+    notes: str | None = None
+    priority: int | None = None
 
 
 class BrandRuleOut(BaseModel):
@@ -89,3 +113,15 @@ class BrandOut(BaseModel):
 
 class BrandWithSecretOut(BrandOut):
     api_key: str
+
+
+class BrandPromptConfigOut(BaseModel):
+    brand_id: int
+    brand_name: str
+    slug: str
+    default_language: str
+    tone_name: str
+    tone_instructions: str
+    fallback_handoff_message: str
+    public_reply_guidelines: str | None
+    updated_at: datetime
