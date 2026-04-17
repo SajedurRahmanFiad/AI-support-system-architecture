@@ -131,7 +131,11 @@ def maybe_refresh_summary(
         return
 
     history = fetch_recent_history(db, conversation.id)
-    summary = provider.summarize_conversation(brand_context, history)
+    try:
+        summary = provider.summarize_conversation(brand_context, history)
+    except Exception:
+        # Skip summary refresh if LLM fails
+        return
     if summary.summary:
         conversation.short_summary = summary.summary
         customer.short_summary = summary.summary

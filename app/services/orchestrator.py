@@ -227,39 +227,52 @@ class MessageProcessor:
             used_sources: list[dict] = []
             token_usage: dict = {}
         else:
-            decision = self.provider.generate_reply(
-                brand=brand_context,
-                customer=customer_snapshot,
-                history=history,
-                incoming_text=payload.text,
-                knowledge=knowledge_hits,
-                attachment_insights=attachment_insights,
-            )
-            decision_status = decision.status
-            confidence = decision.confidence
-            handoff_reason = decision.handoff_reason
-            customer_updates = decision.customer_updates
-            flags = list(dict.fromkeys(risk.flags + decision.flags))
-            used_sources = [
-                {
-                    "chunk_id": item.chunk_id,
-                    "document_id": item.document_id,
-                    "title": item.title,
-                    "score": item.score,
-                }
-                for item in knowledge_hits
-                if not decision.used_knowledge_ids or item.chunk_id in decision.used_knowledge_ids
-            ]
-            token_usage = decision.token_usage
-
-            if confidence < self.settings.handoff_confidence_threshold:
+            try:
+                decision = self.provider.generate_reply(
+                    brand=brand_context,
+                    customer=customer_snapshot,
+                    history=history,
+                    incoming_text=payload.text,
+                    knowledge=knowledge_hits,
+                    attachment_insights=attachment_insights,
+                )
+            except Exception as exc:
+                # If LLM fails, force handoff
+                decision = None
                 decision_status = "handoff"
-                handoff_reason = handoff_reason or "Low confidence reply needs human review."
-
-            if decision_status == "handoff":
+                confidence = 0.0
+                handoff_reason = f"LLM service error: {exc}"
+                customer_updates = {}
+                flags = list(dict.fromkeys(risk.flags + ["llm-error"]))
+                used_sources = []
+                token_usage = {}
                 reply_text = hydrated_brand.fallback_handoff_message
             else:
-                reply_text = decision.reply_text.strip() or hydrated_brand.fallback_handoff_message
+                decision_status = decision.status
+                confidence = decision.confidence
+                handoff_reason = decision.handoff_reason
+                customer_updates = decision.customer_updates
+                flags = list(dict.fromkeys(risk.flags + decision.flags))
+                used_sources = [
+                    {
+                        "chunk_id": item.chunk_id,
+                        "document_id": item.document_id,
+                        "title": item.title,
+                        "score": item.score,
+                    }
+                    for item in knowledge_hits
+                    if not decision.used_knowledge_ids or item.chunk_id in decision.used_knowledge_ids
+                ]
+                token_usage = decision.token_usage
+
+                if confidence < self.settings.handoff_confidence_threshold:
+                    decision_status = "handoff"
+                    handoff_reason = handoff_reason or "Low confidence reply needs human review."
+
+                if decision_status == "handoff":
+                    reply_text = hydrated_brand.fallback_handoff_message
+                else:
+                    reply_text = decision.reply_text.strip() or hydrated_brand.fallback_handoff_message
 
         if product_match and product_match.get("matched"):
             flags = list(dict.fromkeys(flags + [f"product-match:{product_match['product_name']}"]))
