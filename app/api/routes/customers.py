@@ -12,7 +12,7 @@ from app.api.schemas.customers import (
     CustomerUpdate,
 )
 
-router = APIRouter(prefix="/customers", dependencies=[Depends(require_platform_access)])
+router = APIRouter(prefix="/v1/customers", dependencies=[Depends(require_platform_access)])
 
 
 @router.get("", response_model=list[CustomerOut])

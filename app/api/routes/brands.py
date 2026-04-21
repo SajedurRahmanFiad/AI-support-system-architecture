@@ -17,7 +17,7 @@ from app.api.schemas.brands import (
 )
 from app.services.brand_service import create_brand, get_brand_or_404, rotate_brand_key
 
-router = APIRouter(prefix="/brands", dependencies=[Depends(require_platform_access)])
+router = APIRouter(prefix="/v1/brands", dependencies=[Depends(require_platform_access)])
 
 
 def _get_rule_or_404(db: DbSession, brand_id: int, rule_id: int) -> models.BrandRule:

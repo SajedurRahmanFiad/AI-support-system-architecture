@@ -7,7 +7,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.services.brand_service import require_brand_access
 
-router = APIRouter(prefix="/brands")
+router = APIRouter(prefix="/v1/brands")
 
 
 def _serialize_prompt_config(brand) -> BrandPromptConfigOut:

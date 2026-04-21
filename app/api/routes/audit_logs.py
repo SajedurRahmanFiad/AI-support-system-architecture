@@ -5,7 +5,7 @@ from app import models
 from app.api.deps import DbSession, require_platform_access
 from app.api.schemas.audit import AuditLogOut
 
-router = APIRouter(prefix="/audit-logs", dependencies=[Depends(require_platform_access)])
+router = APIRouter(prefix="/v1/audit-logs", dependencies=[Depends(require_platform_access)])
 
 
 @router.get("", response_model=list[AuditLogOut])

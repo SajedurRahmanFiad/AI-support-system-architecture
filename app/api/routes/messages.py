@@ -10,7 +10,7 @@ from app.services.brand_service import require_brand_access
 from app.services.jobs import enqueue_job
 from app.services.orchestrator import MessageProcessor
 
-router = APIRouter(prefix="/messages")
+router = APIRouter(prefix="/v1/messages")
 
 
 @router.post("/process", response_model=MessageProcessResponse)

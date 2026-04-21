@@ -6,7 +6,7 @@ from app.api.deps import DbSession, require_platform_access
 from app.api.schemas.jobs import JobOut, ProcessJobsRequest
 from app.services.jobs import process_pending_jobs
 
-router = APIRouter(prefix="/jobs", dependencies=[Depends(require_platform_access)])
+router = APIRouter(prefix="/v1/jobs", dependencies=[Depends(require_platform_access)])
 
 
 @router.get("", response_model=list[JobOut])
