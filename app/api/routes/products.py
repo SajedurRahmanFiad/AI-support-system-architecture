@@ -15,7 +15,7 @@ from app.services.storage import save_upload
 from app.config import get_settings
 import json
 
-router = APIRouter(prefix="/v1/products")
+router = APIRouter(prefix="/products")
 
 
 def _resolve_storage_path(storage_path: str) -> Path:

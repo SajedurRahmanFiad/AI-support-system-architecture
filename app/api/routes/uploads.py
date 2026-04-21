@@ -14,7 +14,7 @@ from app.database import get_db
 from app.services.brand_service import require_brand_access
 from app.services.storage import detect_attachment_type, save_upload
 
-router = APIRouter(prefix="/v1/uploads")
+router = APIRouter(prefix="/uploads")
 
 
 def _resolve_storage_path(storage_path: str) -> Path:

@@ -21,7 +21,7 @@ from app.api.schemas.dashboard import (
 )
 from app.api.schemas.jobs import JobOut
 
-router = APIRouter(prefix="/v1/dashboard", dependencies=[Depends(require_platform_access)])
+router = APIRouter(prefix="/dashboard", dependencies=[Depends(require_platform_access)])
 
 
 def _group_counts(db: DbSession, column) -> dict[int, int]:

@@ -6,7 +6,7 @@ from app import models
 from app.api.deps import DbSession, require_platform_access
 from app.api.schemas.feedback import FeedbackEventOut, FeedbackEventUpdate
 
-router = APIRouter(prefix="/v1/feedback", dependencies=[Depends(require_platform_access)])
+router = APIRouter(prefix="/feedback", dependencies=[Depends(require_platform_access)])
 
 
 def _serialize_feedback_event(row: models.FeedbackEvent, db: DbSession) -> FeedbackEventOut:

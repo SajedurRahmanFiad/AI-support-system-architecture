@@ -2,6 +2,7 @@ from fastapi import APIRouter
 
 from app.api.routes import (
     audit_logs,
+    bootstrap,
     brand_prompt_config,
     brands,
     conversations,
@@ -17,6 +18,7 @@ from app.api.routes import (
 )
 
 api_router = APIRouter()
+api_router.include_router(bootstrap.router, tags=["bootstrap"])
 api_router.include_router(health.router, tags=["health"])
 api_router.include_router(audit_logs.router, tags=["audit-logs"])
 api_router.include_router(dashboard.router, tags=["dashboard"])

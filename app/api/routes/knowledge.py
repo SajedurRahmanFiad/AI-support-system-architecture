@@ -18,7 +18,7 @@ from app.services.brand_service import get_brand_or_404
 from app.services.jobs import enqueue_job
 from app.services.llm.factory import build_llm_provider
 
-router = APIRouter(prefix="/v1/knowledge", dependencies=[Depends(require_platform_access)])
+router = APIRouter(prefix="/knowledge", dependencies=[Depends(require_platform_access)])
 
 
 @router.post("/documents", response_model=KnowledgeDocumentOut)
