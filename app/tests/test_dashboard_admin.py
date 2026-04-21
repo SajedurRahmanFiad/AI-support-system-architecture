@@ -119,6 +119,31 @@ def test_dashboard_admin_routes(tmp_path):
         reply_json = reply.json()
         assert reply_json["status"] == "send"
 
+        dashboard_overview = client.get(
+            "/api/v1/dashboard/overview",
+            headers=platform_headers,
+        )
+        assert dashboard_overview.status_code == 200
+        assert dashboard_overview.json()["totals"]["brands"] == 1
+        assert dashboard_overview.json()["brand_options"][0]["id"] == brand_id
+
+        dashboard_brands = client.get(
+            "/api/v1/dashboard/brands",
+            headers=platform_headers,
+        )
+        assert dashboard_brands.status_code == 200
+        assert dashboard_brands.json()[0]["stats"]["conversations"] >= 1
+        assert dashboard_brands.json()[0]["stats"]["uploads"] >= 1
+
+        conversation_summaries = client.get(
+            "/api/v1/conversations/summary",
+            headers=platform_headers,
+            params={"brand_id": brand_id},
+        )
+        assert conversation_summaries.status_code == 200
+        assert "messages" not in conversation_summaries.json()[0]
+        assert "last_message_text" in conversation_summaries.json()[0]
+
         customers = client.get(
             "/api/v1/customers",
             headers=platform_headers,

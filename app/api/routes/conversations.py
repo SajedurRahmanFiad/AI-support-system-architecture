@@ -6,9 +6,32 @@ from sqlalchemy.orm import joinedload
 
 from app import models
 from app.api.deps import DbSession, require_platform_access
-from app.api.schemas.conversations import ConversationOut, HandoffRequest
+from app.api.schemas.conversations import ConversationOut, ConversationSummaryOut, HandoffRequest
 
 router = APIRouter(prefix="/v1/conversations", dependencies=[Depends(require_platform_access)])
+
+
+@router.get("/summary", response_model=list[ConversationSummaryOut])
+def list_conversation_summaries(brand_id: int, db: DbSession) -> list[ConversationSummaryOut]:
+    last_message_text = (
+        select(models.Message.text)
+        .where(models.Message.conversation_id == models.Conversation.id)
+        .order_by(models.Message.created_at.desc())
+        .limit(1)
+        .scalar_subquery()
+    )
+    statement = (
+        select(models.Conversation, last_message_text.label("last_message_text"))
+        .where(models.Conversation.brand_id == brand_id)
+        .order_by(models.Conversation.updated_at.desc())
+    )
+    rows = db.execute(statement).all()
+    summaries: list[ConversationSummaryOut] = []
+    for conversation, preview_text in rows:
+        payload = ConversationSummaryOut.model_validate(conversation).model_dump()
+        payload["last_message_text"] = preview_text
+        summaries.append(ConversationSummaryOut(**payload))
+    return summaries
 
 
 @router.get("", response_model=list[ConversationOut])

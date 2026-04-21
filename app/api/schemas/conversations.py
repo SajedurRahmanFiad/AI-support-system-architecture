@@ -65,6 +65,25 @@ class ConversationOut(BaseModel):
     messages: list[MessageOut] = Field(default_factory=list)
 
 
+class ConversationSummaryOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    brand_id: int
+    customer_id: int
+    channel: str
+    external_conversation_id: str
+    status: str
+    owner_type: str
+    owner_name: str | None
+    short_summary: str | None
+    metadata_json: dict[str, Any] | None
+    last_message_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+    last_message_text: str | None = None
+
+
 class HandoffRequest(BaseModel):
     owner_name: str | None = None
     notes: str | None = None
