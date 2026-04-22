@@ -201,6 +201,64 @@ def upsert_conversation_example_document(
     return index_document(db, provider, document)
 
 
+def create_manual_conversation_example_document(
+    db: Session,
+    provider: LLMProvider,
+    *,
+    brand_id: int,
+    customer_text: str,
+    approved_reply: str,
+    original_reply: str | None = None,
+    title: str | None = None,
+    source_reference: str | None = None,
+    notes: str | None = None,
+    metadata: dict | None = None,
+) -> models.KnowledgeDocument:
+    customer_text_value = customer_text.strip()
+    approved_reply_value = approved_reply.strip()
+    original_reply_value = original_reply.strip() if original_reply and original_reply.strip() else None
+    notes_value = notes.strip() if notes and notes.strip() else None
+
+    if not customer_text_value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="customer_text is required.")
+    if not approved_reply_value:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="approved_reply is required.")
+
+    document_title = (title or "").strip() or f"Conversation Example: {_truncate_title(customer_text_value)}"
+    reference = (source_reference or "").strip() or "manual:dashboard-training"
+    document_metadata = dict(metadata or {})
+    document_metadata.update(
+        {
+            "training_type": "manual_conversation_rag_example",
+            "customer_message_text": customer_text_value,
+            "approved_reply": approved_reply_value,
+            "original_reply": original_reply_value,
+            "notes": notes_value,
+        }
+    )
+
+    raw_text = _build_conversation_example_text(
+        customer_text=customer_text_value,
+        approved_reply=approved_reply_value,
+        original_reply=original_reply_value,
+        notes=notes_value,
+    )
+
+    document = models.KnowledgeDocument(
+        brand_id=brand_id,
+        title=document_title,
+        source_type="conversation_training",
+        source_reference=reference,
+        raw_text=raw_text,
+        metadata_json=document_metadata,
+        status="ready",
+    )
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+    return index_document(db, provider, document)
+
+
 def lexical_score(query: str, text: str) -> float:
     query_words = {item.lower().strip(".,!?") for item in query.split() if len(item) > 2}
     text_words = {item.lower().strip(".,!?") for item in text.split()}

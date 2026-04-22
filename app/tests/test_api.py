@@ -118,6 +118,42 @@ def test_conversation_example_can_be_promoted_into_rag(tmp_path):
         assert any(hit["document_id"] == example_json["id"] for hit in hits)
 
 
+def test_manual_conversation_example_can_be_saved_into_rag(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Manual RAG Brand", "slug": "manual-rag-brand"})
+        brand_json = brand.json()
+
+        example = client.post(
+            "/api/v1/knowledge/manual-conversation-examples",
+            headers=headers,
+            json={
+                "brand_id": brand_json["id"],
+                "customer_text": "Do you deliver on Fridays inside Chattogram?",
+                "approved_reply": "Yes, Friday delivery inside Chattogram is available for confirmed orders.",
+                "notes": "Use this for weekend delivery availability questions.",
+                "metadata": {"source": "manual-dashboard-entry"},
+            },
+        )
+        assert example.status_code == 200
+        example_json = example.json()
+        assert example_json["source_type"] == "conversation_training"
+        assert example_json["metadata_json"]["training_type"] == "manual_conversation_rag_example"
+
+        search = client.post(
+            "/api/v1/knowledge/search",
+            headers=headers,
+            json={
+                "brand_id": brand_json["id"],
+                "query": "Can you deliver inside Chattogram on Friday?",
+                "top_k": 5,
+            },
+        )
+        assert search.status_code == 200
+        hits = search.json()["hits"]
+        assert any(hit["document_id"] == example_json["id"] for hit in hits)
+
+
 def test_sensitive_message_handoffs(tmp_path):
     with build_client(tmp_path) as client:
         headers = {"X-Platform-Token": "test-platform-token"}

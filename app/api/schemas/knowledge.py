@@ -36,6 +36,17 @@ class KnowledgeConversationExampleCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class KnowledgeManualConversationExampleCreate(BaseModel):
+    brand_id: int
+    customer_text: str
+    approved_reply: str
+    original_reply: str | None = None
+    title: str | None = None
+    source_reference: str | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class KnowledgeReindexRequest(BaseModel):
     process_async: bool = False
 
