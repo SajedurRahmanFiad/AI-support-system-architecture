@@ -135,6 +135,70 @@ def test_dashboard_admin_routes(tmp_path):
         assert dashboard_brands.json()[0]["stats"]["conversations"] >= 1
         assert dashboard_brands.json()[0]["stats"]["uploads"] >= 1
 
+        facebook_page = client.post(
+            "/api/v1/facebook-pages",
+            headers=platform_headers,
+            json={
+                "brand_id": brand_id,
+                "page_name": "Admin Brand Facebook",
+                "page_id": "1234567890",
+                "page_username": "admin-brand",
+                "app_id": "meta-app-1",
+                "app_secret": "super-secret",
+                "page_access_token": "page-token-1",
+                "verify_token": "verify-token-1",
+                "active": True,
+                "automation_enabled": True,
+                "reply_to_messages": True,
+                "reply_to_comments": True,
+                "private_reply_to_comments": True,
+                "auto_hide_spam_comments": True,
+                "handoff_enabled": True,
+                "business_hours_only": False,
+                "reply_delay_seconds": 30,
+                "allowed_reply_window_hours": 24,
+                "default_language": "bn-BD",
+                "timezone": "Asia/Dhaka",
+                "live_server_label": "primary-worker",
+                "notes": "Primary live page",
+            },
+        )
+        assert facebook_page.status_code == 200
+        facebook_page_json = facebook_page.json()
+        facebook_page_id = facebook_page_json["id"]
+        assert facebook_page_json["credential_status"]["ready"] is True
+        assert facebook_page_json["page_access_token"] == "page-token-1"
+
+        facebook_pages = client.get(
+            "/api/v1/facebook-pages",
+            headers=platform_headers,
+            params={"brand_id": brand_id},
+        )
+        assert facebook_pages.status_code == 200
+        assert facebook_pages.json()[0]["id"] == facebook_page_id
+        assert "page_access_token" not in facebook_pages.json()[0]
+
+        facebook_page_detail = client.get(
+            f"/api/v1/facebook-pages/{facebook_page_id}",
+            headers=platform_headers,
+        )
+        assert facebook_page_detail.status_code == 200
+        assert facebook_page_detail.json()["verify_token"] == "verify-token-1"
+
+        facebook_page_update = client.patch(
+            f"/api/v1/facebook-pages/{facebook_page_id}",
+            headers=platform_headers,
+            json={
+                "automation_enabled": False,
+                "reply_to_comments": False,
+                "reply_delay_seconds": 45,
+                "notes": "Paused during launch week",
+            },
+        )
+        assert facebook_page_update.status_code == 200
+        assert facebook_page_update.json()["automation_enabled"] is False
+        assert facebook_page_update.json()["reply_delay_seconds"] == 45
+
         conversation_summaries = client.get(
             "/api/v1/conversations/summary",
             headers=platform_headers,

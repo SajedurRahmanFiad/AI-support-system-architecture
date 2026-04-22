@@ -8,6 +8,7 @@ from app.api.routes import (
     conversations,
     customers,
     dashboard,
+    facebook_pages,
     feedback,
     health,
     jobs,
@@ -24,6 +25,7 @@ api_router.include_router(audit_logs.router, tags=["audit-logs"])
 api_router.include_router(dashboard.router, tags=["dashboard"])
 api_router.include_router(brand_prompt_config.router, tags=["brand-prompt-config"])
 api_router.include_router(brands.router, tags=["brands"])
+api_router.include_router(facebook_pages.router, tags=["facebook-pages"])
 api_router.include_router(knowledge.router, tags=["knowledge"])
 api_router.include_router(products.router, tags=["products"])
 api_router.include_router(uploads.router, tags=["uploads"])

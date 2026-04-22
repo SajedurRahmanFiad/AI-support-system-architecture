@@ -65,6 +65,7 @@ class Brand(Base, TimestampMixin):
     customers: Mapped[list[Customer]] = relationship(back_populates="brand", cascade="all, delete-orphan")
     conversations: Mapped[list[Conversation]] = relationship(back_populates="brand", cascade="all, delete-orphan")
     product_images: Mapped[list[ProductImage]] = relationship(back_populates="brand", cascade="all, delete-orphan")
+    facebook_pages: Mapped[list[FacebookPageAutomation]] = relationship(back_populates="brand", cascade="all, delete-orphan")
 
 
 class BrandRule(Base, TimestampMixin):
@@ -280,3 +281,33 @@ class ProductImage(Base, TimestampMixin):
     product_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
 
     brand: Mapped[Brand] = relationship(back_populates="product_images")
+
+
+class FacebookPageAutomation(Base, TimestampMixin):
+    __tablename__ = "facebook_page_automations"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    page_name: Mapped[str] = mapped_column(String(255))
+    page_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    page_username: Mapped[str | None] = mapped_column(String(255), default=None)
+    app_id: Mapped[str] = mapped_column(String(255))
+    app_secret: Mapped[str] = mapped_column(Text)
+    page_access_token: Mapped[str] = mapped_column(Text)
+    verify_token: Mapped[str] = mapped_column(Text)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    automation_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reply_to_messages: Mapped[bool] = mapped_column(Boolean, default=True)
+    reply_to_comments: Mapped[bool] = mapped_column(Boolean, default=False)
+    private_reply_to_comments: Mapped[bool] = mapped_column(Boolean, default=False)
+    auto_hide_spam_comments: Mapped[bool] = mapped_column(Boolean, default=False)
+    handoff_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    business_hours_only: Mapped[bool] = mapped_column(Boolean, default=False)
+    reply_delay_seconds: Mapped[int] = mapped_column(Integer, default=15)
+    allowed_reply_window_hours: Mapped[int] = mapped_column(Integer, default=24)
+    default_language: Mapped[str] = mapped_column(String(20), default="bn-BD")
+    timezone: Mapped[str] = mapped_column(String(64), default="Asia/Dhaka")
+    live_server_label: Mapped[str | None] = mapped_column(String(255), default=None)
+    notes: Mapped[str | None] = mapped_column(Text, default=None)
+
+    brand: Mapped[Brand] = relationship(back_populates="facebook_pages")
