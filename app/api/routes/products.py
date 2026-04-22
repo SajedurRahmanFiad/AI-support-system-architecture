@@ -25,11 +25,24 @@ def _resolve_storage_path(storage_path: str) -> Path:
     return get_settings().upload_path / path
 
 
+def _serialize_product_image(product_img: models.ProductImage) -> dict[str, Any]:
+    return {
+        "id": product_img.id,
+        "product_name": product_img.product_name,
+        "category": product_img.product_category,
+        "storage_path": product_img.storage_path,
+        "metadata": product_img.product_metadata or {},
+        "created_at": product_img.created_at,
+        "updated_at": product_img.updated_at,
+    }
+
+
 @router.post("/images/add")
 def add_product_image(
     product_name: str = Form(...),
     category: str = Form("general"),
-    file: UploadFile = File(...),
+    file: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
     brand_id: int = Form(...),
     metadata: str = Form("{}"),  # JSON string
     db: Session = Depends(get_db),
@@ -38,42 +51,55 @@ def add_product_image(
 ) -> dict[str, Any]:
     """Upload a product image for recognition training"""
     require_brand_access(db, brand_id, brand_token, platform_token, get_settings().platform_api_token)
-    if not (file.content_type or "").startswith("image/"):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image files are allowed.")
+    uploads: list[UploadFile] = []
+    if file is not None:
+        uploads.append(file)
+    uploads.extend(files or [])
+    if not uploads:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one image file is required.")
 
     try:
         metadata_dict = json.loads(metadata)
     except json.JSONDecodeError:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid metadata JSON")
 
-    try:
-        image_data = file.file.read()
-        file.file.seek(0)
-        storage_path, mime_type = save_upload(brand_id, file)
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not save image: {e}")
+    recognizer = ProductRecognizer(db, brand_id)
+    created_images: list[models.ProductImage] = []
+    for upload in uploads:
+        if not ((upload.content_type or "").startswith("image/")):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image files are allowed.")
+        try:
+            image_data = upload.file.read()
+            upload.file.seek(0)
+            storage_path, mime_type = save_upload(brand_id, upload)
+        except Exception as exc:
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Could not save image: {exc}")
 
-    # Add to database
-    try:
-        recognizer = ProductRecognizer(db, brand_id)
-        product_img = recognizer.add_product_image(
-            product_name=product_name,
-            category=category,
-            storage_path=storage_path,
-            mime_type=mime_type,
-            image_data=image_data,
-            metadata=metadata_dict,
-        )
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        try:
+            product_img = recognizer.add_product_image(
+                product_name=product_name,
+                category=category,
+                storage_path=storage_path,
+                mime_type=mime_type,
+                image_data=image_data,
+                metadata=metadata_dict,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+        created_images.append(product_img)
+
+    first_image = created_images[0]
 
     return {
-        "status": "Product image added for visual recognition",
-        "product_image_id": product_img.id,
+        "status": "Product images added for visual recognition",
+        "product_image_id": first_image.id,
+        "product_image_ids": [image.id for image in created_images],
         "product_name": product_name,
         "category": category,
-        "storage_path": storage_path,
-        "visual_summary": (product_img.product_metadata or {}).get("visual_summary"),
+        "count": len(created_images),
+        "product_images": [_serialize_product_image(image) for image in created_images],
+        "storage_path": first_image.storage_path,
+        "visual_summary": (first_image.product_metadata or {}).get("visual_summary"),
     }
 
 
@@ -129,11 +155,14 @@ def get_product_images(
 
     recognizer = ProductRecognizer(db, brand_id)
     images = recognizer.get_product_images()
+    product_groups = recognizer.get_product_groups()
 
     return {
         "brand_id": brand_id,
         "product_images": images,
-        "count": len(images)
+        "product_groups": product_groups,
+        "count": len(images),
+        "group_count": len(product_groups),
     }
 
 
@@ -180,14 +209,7 @@ def update_product_image(
     db.add(product_img)
     db.commit()
     db.refresh(product_img)
-    return {
-        "id": product_img.id,
-        "product_name": product_img.product_name,
-        "category": product_img.product_category,
-        "storage_path": product_img.storage_path,
-        "metadata": product_img.product_metadata or {},
-        "created_at": product_img.created_at,
-    }
+    return _serialize_product_image(product_img)
 
 
 @router.get("/images/{product_image_id}/download")

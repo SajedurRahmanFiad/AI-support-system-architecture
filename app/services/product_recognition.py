@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import math
 from typing import Any
 from pathlib import Path
@@ -124,8 +125,7 @@ class ProductRecognizer:
                 }
             )
 
-        scored_candidates.sort(key=lambda item: item["coarse_score"], reverse=True)
-        top_candidates = scored_candidates[:5]
+        top_candidates = self._group_scored_candidates(scored_candidates)[:5]
         reranked, rerank_warning = self._safe_match_product_candidates(mime_type, image_data, self._serialize_candidates(top_candidates))
         if rerank_warning:
             warnings.append(rerank_warning)
@@ -157,6 +157,8 @@ class ProductRecognizer:
                 "metadata": chosen["metadata"] or {},
                 "confidence": final_confidence,
                 "product_image_id": chosen["candidate_id"],
+                "matched_image_ids": chosen.get("image_ids", [chosen["candidate_id"]]),
+                "reference_image_count": chosen.get("image_count", 1),
                 "visual_summary": query_insight.summary,
                 "visible_text": query_insight.extracted_text,
                 "explanation": explanation,
@@ -187,17 +189,47 @@ class ProductRecognizer:
                 .order_by(models.ProductImage.created_at.desc())
             )
         )
-        return [
-            {
-                "id": img.id,
-                "product_name": img.product_name,
-                "category": img.product_category,
-                "storage_path": img.storage_path,
-                "metadata": img.product_metadata or {},
-                "created_at": img.created_at,
-            }
-            for img in product_images
-        ]
+        return [self._serialize_product_image(img) for img in product_images]
+
+    def get_product_groups(self) -> list[dict[str, Any]]:
+        groups: dict[str, dict[str, Any]] = {}
+        for image in self.get_product_images():
+            key = self._product_group_key(image["product_name"], image["category"])
+            group = groups.get(key)
+            if not group:
+                groups[key] = {
+                    "group_key": key,
+                    "product_name": image["product_name"],
+                    "category": image["category"],
+                    "metadata": image.get("metadata") or {},
+                    "image_count": 1,
+                    "primary_image_id": image["id"],
+                    "image_ids": [image["id"]],
+                    "created_at": image.get("created_at"),
+                    "updated_at": image.get("updated_at"),
+                    "images": [image],
+                }
+                continue
+
+            group["images"].append(image)
+            group["image_count"] += 1
+            group["image_ids"].append(image["id"])
+            if image.get("updated_at") and (
+                not group.get("updated_at") or image["updated_at"] > group["updated_at"]
+            ):
+                group["updated_at"] = image["updated_at"]
+                group["primary_image_id"] = image["id"]
+                group["metadata"] = image.get("metadata") or {}
+            if image.get("created_at") and (
+                not group.get("created_at") or image["created_at"] < group["created_at"]
+            ):
+                group["created_at"] = image["created_at"]
+
+        return sorted(
+            groups.values(),
+            key=lambda item: item.get("updated_at") or item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
 
     def delete_product_image(self, product_image_id: int) -> bool:
         product_img = self.db.get(models.ProductImage, product_image_id)
@@ -261,9 +293,58 @@ class ProductRecognizer:
                 "coarse_score": round(float(item["coarse_score"]), 4),
                 "visual_summary": item.get("visual_summary"),
                 "metadata": item.get("metadata") or {},
+                "image_count": int(item.get("image_count", 1)),
+                "image_ids": item.get("image_ids") or [item["candidate_id"]],
             }
             for item in candidates
         ]
+
+    def _serialize_product_image(self, image: models.ProductImage) -> dict[str, Any]:
+        return {
+            "id": image.id,
+            "product_name": image.product_name,
+            "category": image.product_category,
+            "storage_path": image.storage_path,
+            "metadata": image.product_metadata or {},
+            "created_at": image.created_at,
+            "updated_at": image.updated_at,
+        }
+
+    def _group_scored_candidates(self, candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        grouped: dict[str, dict[str, Any]] = {}
+        for candidate in candidates:
+            group_key = self._product_group_key(candidate["product_name"], candidate["category"])
+            current = grouped.get(group_key)
+            if not current:
+                grouped[group_key] = {
+                    **candidate,
+                    "group_key": group_key,
+                    "image_ids": [candidate["candidate_id"]],
+                    "image_count": 1,
+                }
+                continue
+
+            current["image_ids"].append(candidate["candidate_id"])
+            current["image_count"] += 1
+            if candidate["coarse_score"] > current["coarse_score"]:
+                current.update(
+                    {
+                        "candidate_id": candidate["candidate_id"],
+                        "storage_path": candidate["storage_path"],
+                        "coarse_score": candidate["coarse_score"],
+                        "visual_summary": candidate.get("visual_summary"),
+                        "metadata": candidate.get("metadata") or {},
+                        "fingerprint_text": candidate["fingerprint_text"],
+                    }
+                )
+
+        return sorted(grouped.values(), key=lambda item: item["coarse_score"], reverse=True)
+
+    @staticmethod
+    def _product_group_key(product_name: str, category: str) -> str:
+        normalized_name = "-".join(product_name.lower().split())
+        normalized_category = "-".join(category.lower().split())
+        return f"{normalized_category}::{normalized_name}"
 
     @staticmethod
     def _lexical_score(left: str, right: str) -> float:

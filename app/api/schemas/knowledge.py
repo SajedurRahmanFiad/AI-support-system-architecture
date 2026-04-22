@@ -24,6 +24,18 @@ class KnowledgeDocumentUpdate(BaseModel):
     metadata: dict[str, Any] | None = None
 
 
+class KnowledgeConversationExampleCreate(BaseModel):
+    brand_id: int
+    conversation_id: int
+    customer_message_id: int
+    assistant_message_id: int | None = None
+    approved_reply: str
+    title: str | None = None
+    source_reference: str | None = None
+    notes: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class KnowledgeReindexRequest(BaseModel):
     process_async: bool = False
 

@@ -5,6 +5,7 @@ from app import models
 from app.api.deps import DbSession, require_platform_access
 from app.api.schemas.jobs import JobOut
 from app.api.schemas.knowledge import (
+    KnowledgeConversationExampleCreate,
     KnowledgeDocumentCreate,
     KnowledgeDocumentOut,
     KnowledgeDocumentUpdate,
@@ -42,6 +43,23 @@ def create_document(payload: KnowledgeDocumentCreate, db: DbSession) -> models.K
 
     provider = build_llm_provider()
     return knowledge.index_document(db, provider, document)
+
+
+@router.post("/conversation-examples", response_model=KnowledgeDocumentOut)
+def create_conversation_example(payload: KnowledgeConversationExampleCreate, db: DbSession) -> models.KnowledgeDocument:
+    return knowledge.upsert_conversation_example_document(
+        db,
+        build_llm_provider(),
+        brand_id=payload.brand_id,
+        conversation_id=payload.conversation_id,
+        customer_message_id=payload.customer_message_id,
+        assistant_message_id=payload.assistant_message_id,
+        approved_reply=payload.approved_reply,
+        title=payload.title,
+        source_reference=payload.source_reference,
+        notes=payload.notes,
+        metadata=payload.metadata,
+    )
 
 
 @router.get("/documents", response_model=list[KnowledgeDocumentOut])

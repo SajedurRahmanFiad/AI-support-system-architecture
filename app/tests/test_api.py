@@ -69,6 +69,55 @@ def test_brand_setup_and_reply_flow(tmp_path):
         assert body["conversation_id"] is not None
 
 
+def test_conversation_example_can_be_promoted_into_rag(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "RAG Brand", "slug": "rag-brand"})
+        brand_json = brand.json()
+
+        reply = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            json={
+                "brand_id": brand_json["id"],
+                "customer_external_id": "rag-customer",
+                "conversation_external_id": "rag-conversation",
+                "text": "How quickly do orders inside Dhaka arrive?",
+            },
+        )
+        assert reply.status_code == 200
+        reply_json = reply.json()
+
+        example = client.post(
+            "/api/v1/knowledge/conversation-examples",
+            headers=headers,
+            json={
+                "brand_id": brand_json["id"],
+                "conversation_id": reply_json["conversation_id"],
+                "customer_message_id": reply_json["inbound_message_id"],
+                "assistant_message_id": reply_json["outbound_message_id"],
+                "approved_reply": "Inside Dhaka, approved orders usually arrive within 1 day.",
+                "notes": "Use this phrasing for common delivery ETA questions.",
+            },
+        )
+        assert example.status_code == 200
+        example_json = example.json()
+        assert example_json["source_type"] == "conversation_training"
+
+        search = client.post(
+            "/api/v1/knowledge/search",
+            headers=headers,
+            json={
+                "brand_id": brand_json["id"],
+                "query": "How long does inside Dhaka delivery take?",
+                "top_k": 5,
+            },
+        )
+        assert search.status_code == 200
+        hits = search.json()["hits"]
+        assert any(hit["document_id"] == example_json["id"] for hit in hits)
+
+
 def test_sensitive_message_handoffs(tmp_path):
     with build_client(tmp_path) as client:
         headers = {"X-Platform-Token": "test-platform-token"}
@@ -149,6 +198,55 @@ def test_product_image_training_and_recognition(tmp_path):
         body = recognize.json()
         assert body["matched"] is True
         assert body["product_name"] == "Red Mug"
+
+
+def test_product_image_training_accepts_multiple_files_and_groups_matches(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Catalog Groups", "slug": "catalog-groups"})
+        brand_json = brand.json()
+
+        add_images = client.post(
+            "/api/v1/products/images/add",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            files=[
+                ("files", ("front-view.png", TINY_PNG, "image/png")),
+                ("files", ("side-view.png", TINY_PNG, "image/png")),
+            ],
+            data={
+                "brand_id": str(brand_json["id"]),
+                "product_name": "Green Bottle",
+                "category": "bottles",
+            },
+        )
+        assert add_images.status_code == 200
+        assert add_images.json()["count"] == 2
+
+        listing = client.get(
+            "/api/v1/products/images",
+            headers=headers,
+            params={"brand_id": brand_json["id"]},
+        )
+        assert listing.status_code == 200
+        listing_json = listing.json()
+        assert listing_json["count"] == 2
+        assert listing_json["group_count"] == 1
+        assert listing_json["product_groups"][0]["image_count"] == 2
+
+        recognize = client.post(
+            "/api/v1/products/recognize",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            files={"file": ("customer-photo.png", TINY_PNG, "image/png")},
+            data={
+                "brand_id": str(brand_json["id"]),
+                "customer_text": "I need this bottle",
+            },
+        )
+        assert recognize.status_code == 200
+        body = recognize.json()
+        assert body["matched"] is True
+        assert body["product_name"] == "Green Bottle"
+        assert body["reference_image_count"] == 2
 
 
 def test_product_recognition_handles_provider_analysis_failure(tmp_path):
