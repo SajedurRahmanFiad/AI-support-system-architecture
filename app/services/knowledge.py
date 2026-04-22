@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app import models
 from app.config import get_settings
+from app.services.brand_service import get_global_brand
 from app.services.llm.base import KnowledgeSnippet, LLMProvider
 
 
@@ -54,6 +55,25 @@ def _build_conversation_example_text(
         sections.append(f"Reviewer notes:\n{notes.strip()}")
     sections.append(
         "Use this example only when a future customer asks for materially similar help and the facts still match the current policy, catalog, or workflow."
+    )
+    return "\n\n".join(sections)
+
+
+def _build_conversation_transcript_text(messages: list[dict[str, str]], notes: str | None = None) -> str:
+    transcript_lines: list[str] = []
+    for message in messages:
+        speaker = "Customer" if message["role"] == "customer" else "Assistant"
+        transcript_lines.append(f"{speaker}:\n{message['text'].strip()}")
+
+    sections = [
+        "Approved support example captured from a curated conversation transcript.",
+        "Conversation transcript:",
+        "\n\n".join(transcript_lines),
+    ]
+    if notes and notes.strip():
+        sections.append(f"Reviewer notes:\n{notes.strip()}")
+    sections.append(
+        "Use this example only when a future customer needs materially similar help and the facts still match the current policy, catalog, or workflow."
     )
     return "\n\n".join(sections)
 
@@ -259,6 +279,75 @@ def create_manual_conversation_example_document(
     return index_document(db, provider, document)
 
 
+def create_manual_conversation_transcript_document(
+    db: Session,
+    provider: LLMProvider,
+    *,
+    brand_id: int,
+    messages: list[dict[str, str]],
+    title: str | None = None,
+    source_reference: str | None = None,
+    notes: str | None = None,
+    metadata: dict | None = None,
+) -> models.KnowledgeDocument:
+    transcript_messages = [
+        {
+            "role": item["role"],
+            "text": item["text"].strip(),
+        }
+        for item in messages
+        if item.get("role") in {"customer", "assistant"} and item.get("text", "").strip()
+    ]
+
+    if len(transcript_messages) < 2:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least two transcript messages are required.")
+
+    roles = {message["role"] for message in transcript_messages}
+    if "customer" not in roles:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Transcript must include at least one customer message.")
+    if "assistant" not in roles:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Transcript must include at least one assistant message.")
+
+    notes_value = notes.strip() if notes and notes.strip() else None
+    first_customer_text = next(
+        (message["text"] for message in transcript_messages if message["role"] == "customer"),
+        transcript_messages[0]["text"],
+    )
+    assistant_messages = [message["text"] for message in transcript_messages if message["role"] == "assistant"]
+
+    document_title = (title or "").strip() or f"Conversation Example: {_truncate_title(first_customer_text)}"
+    reference = (source_reference or "").strip() or "manual:dashboard-conversation"
+    document_metadata = dict(metadata or {})
+    document_metadata.update(
+        {
+            "training_type": "manual_conversation_rag_example",
+            "conversation_mode": "transcript",
+            "message_count": len(transcript_messages),
+            "conversation_messages": transcript_messages,
+            "customer_message_text": first_customer_text,
+            "approved_reply": assistant_messages[-1] if assistant_messages else None,
+            "approved_reply_messages": assistant_messages,
+            "notes": notes_value,
+        }
+    )
+
+    raw_text = _build_conversation_transcript_text(transcript_messages, notes_value)
+
+    document = models.KnowledgeDocument(
+        brand_id=brand_id,
+        title=document_title,
+        source_type="conversation_training",
+        source_reference=reference,
+        raw_text=raw_text,
+        metadata_json=document_metadata,
+        status="ready",
+    )
+    db.add(document)
+    db.commit()
+    db.refresh(document)
+    return index_document(db, provider, document)
+
+
 def lexical_score(query: str, text: str) -> float:
     query_words = {item.lower().strip(".,!?") for item in query.split() if len(item) > 2}
     text_words = {item.lower().strip(".,!?") for item in text.split()}
@@ -287,10 +376,15 @@ def search_knowledge(
 ) -> list[KnowledgeSnippet]:
     settings = get_settings()
     top_k = top_k or settings.knowledge_top_k
+    global_brand = get_global_brand(db)
+    brand_ids = [brand_id]
+    if global_brand and global_brand.id != brand_id:
+        brand_ids.append(global_brand.id)
+
     statement = (
         select(models.KnowledgeChunk)
         .options(joinedload(models.KnowledgeChunk.document))
-        .where(models.KnowledgeChunk.brand_id == brand_id)
+        .where(models.KnowledgeChunk.brand_id.in_(brand_ids))
         .limit(settings.knowledge_scan_limit)
     )
     chunks = list(db.scalars(statement))

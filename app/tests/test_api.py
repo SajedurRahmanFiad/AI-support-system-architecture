@@ -154,6 +154,100 @@ def test_manual_conversation_example_can_be_saved_into_rag(tmp_path):
         assert any(hit["document_id"] == example_json["id"] for hit in hits)
 
 
+def test_manual_conversation_transcript_can_be_saved_into_rag(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Transcript Brand", "slug": "transcript-brand"})
+        brand_json = brand.json()
+
+        example = client.post(
+            "/api/v1/knowledge/manual-conversation-examples",
+            headers=headers,
+            json={
+                "brand_id": brand_json["id"],
+                "title": "Friday delivery follow-up",
+                "messages": [
+                    {"role": "customer", "text": "Do you deliver inside Chattogram on Friday?"},
+                    {"role": "assistant", "text": "Yes, Friday delivery is available for confirmed Chattogram orders."},
+                    {"role": "customer", "text": "Can I pay cash on delivery?"},
+                    {"role": "assistant", "text": "Yes, cash on delivery is available inside Chattogram."},
+                ],
+                "notes": "Use this when both Friday delivery and COD are being discussed together.",
+            },
+        )
+        assert example.status_code == 200
+        example_json = example.json()
+        assert example_json["source_type"] == "conversation_training"
+        assert example_json["metadata_json"]["training_type"] == "manual_conversation_rag_example"
+        assert example_json["metadata_json"]["conversation_mode"] == "transcript"
+        assert len(example_json["metadata_json"]["conversation_messages"]) == 4
+
+        search = client.post(
+            "/api/v1/knowledge/search",
+            headers=headers,
+            json={
+                "brand_id": brand_json["id"],
+                "query": "Can I get Friday delivery with cash on delivery inside Chattogram?",
+                "top_k": 5,
+            },
+        )
+        assert search.status_code == 200
+        hits = search.json()["hits"]
+        assert any(hit["document_id"] == example_json["id"] for hit in hits)
+
+
+def test_global_manual_conversation_example_applies_to_all_brands(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        first_brand = client.post("/api/v1/brands", headers=headers, json={"name": "Brand One", "slug": "brand-one"})
+        second_brand = client.post("/api/v1/brands", headers=headers, json={"name": "Brand Two", "slug": "brand-two"})
+        first_brand_json = first_brand.json()
+        second_brand_json = second_brand.json()
+
+        example = client.post(
+            "/api/v1/knowledge/manual-conversation-examples",
+            headers=headers,
+            json={
+                "global_example": True,
+                "messages": [
+                    {"role": "customer", "text": "Do you deliver on Friday?"},
+                    {"role": "assistant", "text": "Yes, Friday delivery is available for confirmed orders."},
+                ],
+                "notes": "Global delivery availability example.",
+            },
+        )
+        assert example.status_code == 200
+        example_json = example.json()
+
+        search = client.post(
+            "/api/v1/knowledge/search",
+            headers=headers,
+            json={
+                "brand_id": second_brand_json["id"],
+                "query": "Is Friday delivery available?",
+                "top_k": 5,
+            },
+        )
+        assert search.status_code == 200
+        hits = search.json()["hits"]
+        assert any(hit["document_id"] == example_json["id"] for hit in hits)
+
+        global_documents = client.get(
+            "/api/v1/knowledge/documents",
+            headers=headers,
+            params={"global_only": True},
+        )
+        assert global_documents.status_code == 200
+        assert any(document["id"] == example_json["id"] for document in global_documents.json())
+
+        visible_brands = client.get("/api/v1/dashboard/overview", headers=headers)
+        assert visible_brands.status_code == 200
+        overview_json = visible_brands.json()
+        assert overview_json["totals"]["brands"] == 2
+        assert len(overview_json["brand_options"]) == 2
+        assert {item["id"] for item in overview_json["brand_options"]} == {first_brand_json["id"], second_brand_json["id"]}
+
+
 def test_sensitive_message_handoffs(tmp_path):
     with build_client(tmp_path) as client:
         headers = {"X-Platform-Token": "test-platform-token"}

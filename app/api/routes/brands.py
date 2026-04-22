@@ -15,7 +15,7 @@ from app.api.schemas.brands import (
     StyleExampleOut,
     StyleExampleUpdate,
 )
-from app.services.brand_service import create_brand, get_brand_or_404, rotate_brand_key
+from app.services.brand_service import GLOBAL_BRAND_SLUG, create_brand, get_brand_or_404, rotate_brand_key
 
 router = APIRouter(prefix="/v1/brands", dependencies=[Depends(require_platform_access)])
 
@@ -36,7 +36,13 @@ def _get_style_example_or_404(db: DbSession, brand_id: int, example_id: int) -> 
 
 @router.get("", response_model=list[BrandOut])
 def list_brands(db: DbSession) -> list[models.Brand]:
-    return list(db.scalars(select(models.Brand).order_by(models.Brand.created_at.desc())))
+    return list(
+        db.scalars(
+            select(models.Brand)
+            .where(models.Brand.slug != GLOBAL_BRAND_SLUG)
+            .order_by(models.Brand.created_at.desc())
+        )
+    )
 
 
 @router.post("", response_model=BrandWithSecretOut)

@@ -7,8 +7,46 @@ from sqlalchemy.orm import Session
 from app import models
 from app.security import generate_api_key, hash_api_key, verify_api_key
 
+GLOBAL_BRAND_SLUG = "__global__"
+GLOBAL_BRAND_NAME = "__Global Conversation Scope__"
+
+
+def is_global_brand(brand: models.Brand | None) -> bool:
+    return bool(brand and brand.slug == GLOBAL_BRAND_SLUG)
+
+
+def get_global_brand(db: Session) -> models.Brand | None:
+    return db.scalar(select(models.Brand).where(models.Brand.slug == GLOBAL_BRAND_SLUG))
+
+
+def ensure_global_brand(db: Session) -> models.Brand:
+    existing = get_global_brand(db)
+    if existing:
+        return existing
+
+    brand = models.Brand(
+        name=GLOBAL_BRAND_NAME,
+        slug=GLOBAL_BRAND_SLUG,
+        description="Internal global conversation-training scope.",
+        default_language="bn-BD",
+        tone_name="Global shared support examples",
+        tone_instructions="",
+        fallback_handoff_message="A human teammate will continue this conversation shortly.",
+        public_reply_guidelines="",
+        active=False,
+        settings_json={"internal_scope": "global_knowledge"},
+        api_key_hash=hash_api_key("internal-global-brand"),
+    )
+    db.add(brand)
+    db.commit()
+    db.refresh(brand)
+    return brand
+
 
 def create_brand(db: Session, payload: dict) -> tuple[models.Brand, str]:
+    if payload["slug"] == GLOBAL_BRAND_SLUG:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This brand slug is reserved.")
+
     existing = db.scalar(select(models.Brand).where(models.Brand.slug == payload["slug"]))
     if existing:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Brand slug already exists.")
@@ -36,7 +74,7 @@ def create_brand(db: Session, payload: dict) -> tuple[models.Brand, str]:
 
 
 def get_brand_or_404(db: Session, brand_id: int) -> models.Brand:
-    brand = db.get(models.Brand, brand_id)
+    brand = db.scalar(select(models.Brand).where(models.Brand.id == brand_id, models.Brand.slug != GLOBAL_BRAND_SLUG))
     if not brand:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Brand not found.")
     return brand

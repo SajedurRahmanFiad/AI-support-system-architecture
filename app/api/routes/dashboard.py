@@ -20,6 +20,7 @@ from app.api.schemas.dashboard import (
     DashboardTotalsOut,
 )
 from app.api.schemas.jobs import JobOut
+from app.services.brand_service import GLOBAL_BRAND_SLUG
 
 router = APIRouter(prefix="/v1/dashboard", dependencies=[Depends(require_platform_access)])
 
@@ -60,7 +61,13 @@ def _brand_options(brands: list[models.Brand]) -> list[BrandOptionOut]:
 
 @router.get("/brands", response_model=list[BrandDashboardSummaryOut])
 def list_dashboard_brands(db: DbSession) -> list[BrandDashboardSummaryOut]:
-    brands = list(db.scalars(select(models.Brand).order_by(models.Brand.created_at.desc())))
+    brands = list(
+        db.scalars(
+            select(models.Brand)
+            .where(models.Brand.slug != GLOBAL_BRAND_SLUG)
+            .order_by(models.Brand.created_at.desc())
+        )
+    )
     rules = _group_counts(db, models.BrandRule.brand_id)
     examples = _group_counts(db, models.StyleExample.brand_id)
     documents = _group_counts(db, models.KnowledgeDocument.brand_id)
@@ -89,7 +96,13 @@ def list_dashboard_brands(db: DbSession) -> list[BrandDashboardSummaryOut]:
 
 @router.get("/overview", response_model=DashboardOverviewOut)
 def get_dashboard_overview(db: DbSession) -> DashboardOverviewOut:
-    brands = list(db.scalars(select(models.Brand).order_by(models.Brand.created_at.desc())))
+    brands = list(
+        db.scalars(
+            select(models.Brand)
+            .where(models.Brand.slug != GLOBAL_BRAND_SLUG)
+            .order_by(models.Brand.created_at.desc())
+        )
+    )
     recent_jobs = list(db.scalars(select(models.Job).order_by(models.Job.created_at.desc()).limit(8)))
 
     conversation_totals = db.execute(

@@ -16,7 +16,7 @@ from app.api.schemas.knowledge import (
     KnowledgeSearchResponse,
 )
 from app.services import knowledge
-from app.services.brand_service import get_brand_or_404
+from app.services.brand_service import ensure_global_brand, get_brand_or_404, get_global_brand
 from app.services.jobs import enqueue_job
 from app.services.llm.factory import build_llm_provider
 
@@ -65,22 +65,59 @@ def create_conversation_example(payload: KnowledgeConversationExampleCreate, db:
 
 @router.post("/manual-conversation-examples", response_model=KnowledgeDocumentOut)
 def create_manual_conversation_example(payload: KnowledgeManualConversationExampleCreate, db: DbSession) -> models.KnowledgeDocument:
+    target_brand_id = payload.brand_id
+    if payload.global_example:
+        target_brand_id = ensure_global_brand(db).id
+
+    if payload.messages:
+        return knowledge.create_manual_conversation_transcript_document(
+            db,
+            build_llm_provider(),
+            brand_id=target_brand_id or 0,
+            messages=[message.model_dump() for message in payload.messages],
+            title=payload.title,
+            source_reference=payload.source_reference,
+            notes=payload.notes,
+            metadata={
+                **payload.metadata,
+                **({"global_example": True} if payload.global_example else {}),
+            },
+        )
+
     return knowledge.create_manual_conversation_example_document(
         db,
         build_llm_provider(),
-        brand_id=payload.brand_id,
-        customer_text=payload.customer_text,
-        approved_reply=payload.approved_reply,
+        brand_id=target_brand_id or 0,
+        customer_text=payload.customer_text or "",
+        approved_reply=payload.approved_reply or "",
         original_reply=payload.original_reply,
         title=payload.title,
         source_reference=payload.source_reference,
         notes=payload.notes,
-        metadata=payload.metadata,
+        metadata={
+            **payload.metadata,
+            **({"global_example": True} if payload.global_example else {}),
+        },
     )
 
 
 @router.get("/documents", response_model=list[KnowledgeDocumentOut])
-def list_documents(brand_id: int, db: DbSession) -> list[models.KnowledgeDocument]:
+def list_documents(db: DbSession, brand_id: int | None = None, global_only: bool = False) -> list[models.KnowledgeDocument]:
+    if global_only:
+        global_brand = get_global_brand(db)
+        if not global_brand:
+            return []
+        return list(
+            db.scalars(
+                select(models.KnowledgeDocument)
+                .where(models.KnowledgeDocument.brand_id == global_brand.id)
+                .order_by(models.KnowledgeDocument.created_at.desc())
+            )
+        )
+
+    if brand_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="brand_id is required unless global_only is true.")
+
     return list(
         db.scalars(
             select(models.KnowledgeDocument)
