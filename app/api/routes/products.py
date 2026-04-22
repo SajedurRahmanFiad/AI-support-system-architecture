@@ -96,12 +96,20 @@ def recognize_product(
     except Exception as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Could not read image: {e}")
 
-    recognizer = ProductRecognizer(db, brand_id)
-    result = recognizer.recognize_product_from_image(
-        image_data=image_data,
-        mime_type=file.content_type or "image/jpeg",
-        customer_text=customer_text,
-    )
+    try:
+        recognizer = ProductRecognizer(db, brand_id)
+        result = recognizer.recognize_product_from_image(
+            image_data=image_data,
+            mime_type=file.content_type or "image/jpeg",
+            customer_text=customer_text,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Product recognition is temporarily unavailable. Please try again.",
+        )
 
     if result.get("error"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result["error"])

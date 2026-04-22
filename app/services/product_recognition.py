@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.config import get_settings
 from app.services.llm.factory import build_llm_provider
+from app.services.llm.base import AttachmentInsight
 
 
 class ProductRecognizer:
@@ -28,7 +29,7 @@ class ProductRecognizer:
         metadata: dict[str, Any] | None = None,
     ) -> models.ProductImage:
         metadata_dict = dict(metadata or {})
-        insight = self.provider.analyze_attachment("image", mime_type, image_data)
+        insight, _warning = self._safe_analyze_attachment("image", mime_type, image_data)
         fingerprint_text = self._build_reference_fingerprint(
             product_name=product_name,
             category=category,
@@ -36,9 +37,9 @@ class ProductRecognizer:
             extracted_text=insight.extracted_text,
             metadata=metadata_dict,
         )
-        image_embedding = self.provider.embed_image(image_data)
+        image_embedding, _embedding_warning = self._safe_embed_image(image_data)
         if not image_embedding:
-            fallback_embeddings = self.provider.embed_texts([fingerprint_text])
+            fallback_embeddings = self._safe_embed_texts([fingerprint_text])
             image_embedding = fallback_embeddings[0] if fallback_embeddings else None
 
         metadata_dict.update(
@@ -69,15 +70,22 @@ class ProductRecognizer:
         mime_type: str = "image/jpeg",
         customer_text: str = "",
     ) -> dict[str, Any]:
-        query_insight = self.provider.analyze_attachment("image", mime_type, image_data)
+        warnings: list[str] = []
+        query_insight, insight_warning = self._safe_analyze_attachment("image", mime_type, image_data)
+        if insight_warning:
+            warnings.append(insight_warning)
+
         query_text = self._build_lookup_text(
             summary=query_insight.summary,
             extracted_text=query_insight.extracted_text,
             customer_text=customer_text,
         )
-        query_embedding = self.provider.embed_image(image_data)
+        query_embedding, embedding_warning = self._safe_embed_image(image_data)
+        if embedding_warning:
+            warnings.append(embedding_warning)
+
         if not query_embedding:
-            query_embeddings = self.provider.embed_texts([query_text]) if query_text else []
+            query_embeddings = self._safe_embed_texts([query_text]) if query_text else []
             query_embedding = query_embeddings[0] if query_embeddings else None
 
         product_images = list(
@@ -118,7 +126,9 @@ class ProductRecognizer:
 
         scored_candidates.sort(key=lambda item: item["coarse_score"], reverse=True)
         top_candidates = scored_candidates[:5]
-        reranked = self.provider.match_product_candidates(mime_type, image_data, self._serialize_candidates(top_candidates))
+        reranked, rerank_warning = self._safe_match_product_candidates(mime_type, image_data, self._serialize_candidates(top_candidates))
+        if rerank_warning:
+            warnings.append(rerank_warning)
 
         chosen = top_candidates[0] if top_candidates else None
         final_confidence = chosen["coarse_score"] if chosen else 0.0
@@ -140,7 +150,7 @@ class ProductRecognizer:
 
         confidence_threshold = 0.58 if self.provider.provider_name == "gemini" else 0.45
         if chosen and final_confidence >= confidence_threshold:
-            return {
+            response = {
                 "matched": True,
                 "product_name": chosen["product_name"],
                 "category": chosen["category"],
@@ -152,8 +162,11 @@ class ProductRecognizer:
                 "explanation": explanation,
                 "top_candidates": self._serialize_candidates(top_candidates),
             }
+            if warnings:
+                response["warning"] = " ".join(dict.fromkeys(warnings))
+            return response
 
-        return {
+        response = {
             "matched": False,
             "confidence": final_confidence,
             "best_guess": chosen["product_name"] if chosen else None,
@@ -162,6 +175,9 @@ class ProductRecognizer:
             "top_candidates": self._serialize_candidates(top_candidates),
             "explanation": explanation,
         }
+        if warnings:
+            response["warning"] = " ".join(dict.fromkeys(warnings))
+        return response
 
     def get_product_images(self) -> list[dict[str, Any]]:
         product_images = list(
@@ -267,3 +283,40 @@ class ProductRecognizer:
         if magnitude1 == 0 or magnitude2 == 0:
             return 0.0
         return dot_product / (magnitude1 * magnitude2)
+
+    def _safe_analyze_attachment(self, attachment_type: str, mime_type: str, data: bytes) -> tuple[AttachmentInsight, str | None]:
+        try:
+            return self.provider.analyze_attachment(attachment_type, mime_type, data), None
+        except Exception:
+            return (
+                AttachmentInsight(
+                    attachment_id=0,
+                    attachment_type=attachment_type,
+                    summary="Attachment received. Detailed visual analysis is temporarily unavailable.",
+                    extracted_text=None,
+                ),
+                "Detailed image analysis was temporarily unavailable, so recognition used a fallback match."
+            )
+
+    def _safe_embed_image(self, image_data: bytes) -> tuple[list[float], str | None]:
+        try:
+            return self.provider.embed_image(image_data), None
+        except Exception:
+            return [], "Image embedding was temporarily unavailable, so recognition used a fallback match."
+
+    def _safe_embed_texts(self, texts: list[str]) -> list[list[float]]:
+        try:
+            return self.provider.embed_texts(texts)
+        except Exception:
+            return []
+
+    def _safe_match_product_candidates(
+        self,
+        mime_type: str,
+        data: bytes,
+        candidates: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            return self.provider.match_product_candidates(mime_type, data, candidates), None
+        except Exception:
+            return None, "Visual reranking was temporarily unavailable, so recognition used the base match score only."

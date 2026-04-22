@@ -151,6 +151,53 @@ def test_product_image_training_and_recognition(tmp_path):
         assert body["product_name"] == "Red Mug"
 
 
+def test_product_recognition_handles_provider_analysis_failure(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Catalog Fallback", "slug": "catalog-fallback"})
+        brand_json = brand.json()
+
+        add_image = client.post(
+            "/api/v1/products/images/add",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            files={"file": ("red-mug.png", TINY_PNG, "image/png")},
+            data={
+                "brand_id": str(brand_json["id"]),
+                "product_name": "Red Mug",
+                "category": "mugs",
+                "metadata": '{"sku":"RM-1"}',
+            },
+        )
+        assert add_image.status_code == 200
+
+        from app.services.llm.mock import MockLLMProvider
+
+        original = MockLLMProvider.analyze_attachment
+
+        def broken_analyze_attachment(self, attachment_type, mime_type, data):
+            raise RuntimeError("temporary provider failure")
+
+        MockLLMProvider.analyze_attachment = broken_analyze_attachment
+        try:
+            recognize = client.post(
+                "/api/v1/products/recognize",
+                headers={"X-Brand-Api-Key": brand_json["api_key"]},
+                files={"file": ("customer-photo.png", TINY_PNG, "image/png")},
+                data={
+                    "brand_id": str(brand_json["id"]),
+                    "customer_text": "I want this mug",
+                },
+            )
+        finally:
+            MockLLMProvider.analyze_attachment = original
+
+        assert recognize.status_code == 200
+        body = recognize.json()
+        assert body["matched"] is True
+        assert body["product_name"] == "Red Mug"
+        assert "warning" in body
+
+
 def test_message_flow_uses_product_match_for_knowledge(tmp_path):
     with build_client(tmp_path) as client:
         headers = {"X-Platform-Token": "test-platform-token"}
