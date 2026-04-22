@@ -217,8 +217,11 @@ class MessageProcessor:
                     unique_hits.append(hit)
             knowledge_hits = unique_hits[:self.settings.knowledge_top_k]
 
+        assign_human_owner = False
+
         if risk.force_handoff:
             decision_status = "handoff"
+            assign_human_owner = True
             confidence = 0.99
             handoff_reason = risk.reason or "Human review required."
             reply_text = hydrated_brand.fallback_handoff_message
@@ -240,6 +243,7 @@ class MessageProcessor:
                 # If LLM fails, force handoff
                 decision = None
                 decision_status = "handoff"
+                assign_human_owner = False
                 confidence = 0.0
                 handoff_reason = f"LLM service error: {exc}"
                 customer_updates = {}
@@ -249,6 +253,7 @@ class MessageProcessor:
                 reply_text = hydrated_brand.fallback_handoff_message
             else:
                 decision_status = decision.status
+                assign_human_owner = decision_status == "handoff"
                 confidence = decision.confidence
                 handoff_reason = decision.handoff_reason
                 customer_updates = decision.customer_updates
@@ -265,8 +270,9 @@ class MessageProcessor:
                 ]
                 token_usage = decision.token_usage
 
-                if confidence < self.settings.handoff_confidence_threshold:
+                if decision_status != "handoff" and confidence < self.settings.handoff_confidence_threshold:
                     decision_status = "handoff"
+                    assign_human_owner = False
                     handoff_reason = handoff_reason or "Low confidence reply needs human review."
 
                 if decision_status == "handoff":
@@ -305,10 +311,13 @@ class MessageProcessor:
 
         if decision_status == "handoff":
             conversation.status = "handoff"
-            conversation.owner_type = "human"
+            conversation.owner_type = "human" if assign_human_owner else "ai"
+            if not assign_human_owner:
+                conversation.owner_name = None
         else:
             conversation.status = "open"
             conversation.owner_type = "ai"
+            conversation.owner_name = None
 
         now = datetime.now(timezone.utc)
         conversation.last_message_at = now

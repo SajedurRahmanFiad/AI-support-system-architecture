@@ -139,6 +139,64 @@ def test_sensitive_message_handoffs(tmp_path):
         assert body["handoff_reason"]
 
 
+def test_llm_error_handoff_does_not_lock_conversation_to_human(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Demo 2b", "slug": "demo-2b"})
+        brand_json = brand.json()
+        api_key = brand_json["api_key"]
+
+        from app.services.llm.mock import MockLLMProvider
+
+        original = MockLLMProvider.generate_reply
+
+        def broken_generate_reply(self, brand, customer, history, incoming_text, knowledge, attachment_insights):
+            raise RuntimeError("temporary provider failure")
+
+        MockLLMProvider.generate_reply = broken_generate_reply
+        try:
+            first_reply = client.post(
+                "/api/v1/messages/process",
+                headers={"X-Brand-Api-Key": api_key},
+                json={
+                    "brand_id": brand_json["id"],
+                    "customer_external_id": "cust-llm-error",
+                    "conversation_external_id": "conv-llm-error",
+                    "text": "Hello there",
+                },
+            )
+        finally:
+            MockLLMProvider.generate_reply = original
+
+        assert first_reply.status_code == 200
+        first_body = first_reply.json()
+        assert first_body["status"] == "handoff"
+        assert "LLM service error" in first_body["handoff_reason"]
+
+        second_reply = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": api_key},
+            json={
+                "brand_id": brand_json["id"],
+                "customer_external_id": "cust-llm-error",
+                "conversation_external_id": "conv-llm-error",
+                "text": "Do you deliver in Dhaka?",
+            },
+        )
+        assert second_reply.status_code == 200
+        second_body = second_reply.json()
+        assert second_body["status"] == "send"
+
+        conversations = client.get(
+            "/api/v1/conversations",
+            headers=headers,
+            params={"brand_id": brand_json["id"]},
+        )
+        assert conversations.status_code == 200
+        conversation = conversations.json()[0]
+        assert conversation["owner_type"] == "ai"
+
+
 def test_async_message_job(tmp_path):
     with build_client(tmp_path) as client:
         headers = {"X-Platform-Token": "test-platform-token"}
