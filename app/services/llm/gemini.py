@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from typing import Any
 
@@ -69,18 +70,27 @@ class GeminiLLMProvider(LLMProvider):
             "summary should explain what the attachment means for support. "
             "transcript is only for audio. extracted_text is for visible text in images or documents."
         )
-        response = self.client.models.generate_content(
-            model=self.settings.gemini_model,
-            contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
-        )
-        payload = self._extract_json(getattr(response, "text", "") or "")
-        return AttachmentInsight(
-            attachment_id=0,
-            attachment_type=attachment_type,
-            summary=payload.get("summary", f"{attachment_type} attachment analyzed."),
-            transcript=payload.get("transcript"),
-            extracted_text=payload.get("extracted_text"),
-        )
+        try:
+            response = self.client.models.generate_content(
+                model=self.settings.gemini_model,
+                contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
+            )
+            payload = self._extract_json(getattr(response, "text", "") or "")
+            return AttachmentInsight(
+                attachment_id=0,
+                attachment_type=attachment_type,
+                summary=payload.get("summary", f"{attachment_type} attachment analyzed."),
+                transcript=payload.get("transcript"),
+                extracted_text=payload.get("extracted_text"),
+            )
+        except Exception:
+            return AttachmentInsight(
+                attachment_id=0,
+                attachment_type=attachment_type,
+                summary=self._fallback_attachment_summary(attachment_type, mime_type, data),
+                transcript=None,
+                extracted_text=None,
+            )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
@@ -134,14 +144,17 @@ class GeminiLLMProvider(LLMProvider):
             "Set matched to false if none of the candidates is a confident match.\n\n"
             f"Candidates:\n{json.dumps(candidates, ensure_ascii=True)}"
         )
-        response = self.client.models.generate_content(
-            model=self.settings.gemini_model,
-            contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
-        )
-        payload = self._extract_json(getattr(response, "text", "") or "")
-        if not payload:
+        try:
+            response = self.client.models.generate_content(
+                model=self.settings.gemini_model,
+                contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
+            )
+            payload = self._extract_json(getattr(response, "text", "") or "")
+            if not payload:
+                return None
+            return payload
+        except Exception:
             return None
-        return payload
 
     def _build_reply_prompt(
         self,
@@ -254,3 +267,7 @@ class GeminiLLMProvider(LLMProvider):
         if isinstance(serialized, dict):
             return serialized
         return {"value": serialized}
+
+    def _fallback_attachment_summary(self, attachment_type: str, mime_type: str, data: bytes) -> str:
+        digest = hashlib.sha256(data).hexdigest()[:16]
+        return f"{attachment_type} attachment received ({mime_type}, {len(data)} bytes, fingerprint {digest})."
