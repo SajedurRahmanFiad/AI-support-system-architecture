@@ -81,8 +81,31 @@ def test_facebook_webhook_verification_uses_saved_verify_token(tmp_path):
         assert rejected.status_code == 403
 
 
-def test_facebook_webhook_processes_messenger_messages_into_conversations(tmp_path):
+def test_facebook_webhook_processes_messenger_messages_into_conversations(tmp_path, monkeypatch):
     with build_client(tmp_path) as client:
+        from app.services import facebook_webhooks
+
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            text = '{"recipient_id":"psid-1","message_id":"fb-mid-1"}'
+
+            def json(self):
+                return {"recipient_id": "psid-1", "message_id": "fb-mid-1"}
+
+        def fake_post(url, params=None, json=None, timeout=None):
+            calls.append(
+                {
+                    "url": url,
+                    "params": params,
+                    "json": json,
+                    "timeout": timeout,
+                }
+            )
+            return FakeResponse()
+
+        monkeypatch.setattr(facebook_webhooks.httpx, "post", fake_post)
         platform_headers, brand_json, _ = _create_brand_and_page(client)
 
         webhook = client.post(
@@ -112,6 +135,12 @@ def test_facebook_webhook_processes_messenger_messages_into_conversations(tmp_pa
         body = webhook.json()
         assert body["processed"] == 1
         assert body["errors"] == 0
+        assert len(calls) == 1
+        assert calls[0]["url"] == "https://graph.facebook.com/v25.0/me/messages"
+        assert calls[0]["params"] == {"access_token": "page-token-1"}
+        assert calls[0]["json"]["recipient"] == {"id": "psid-1"}
+        assert calls[0]["json"]["messaging_type"] == "RESPONSE"
+        assert "Dhaka delivery takes 1 day" in calls[0]["json"]["message"]["text"]
 
         conversations = client.get(
             "/api/v1/conversations",
@@ -125,6 +154,86 @@ def test_facebook_webhook_processes_messenger_messages_into_conversations(tmp_pa
         assert len(conversation["messages"]) == 2
         assert conversation["messages"][0]["text"] == "How long does shipping take in Dhaka?"
         assert "Dhaka delivery takes 1 day" in conversation["messages"][1]["text"]
+        assert conversation["messages"][1]["external_message_id"] == "fb-mid-1"
+
+
+def test_facebook_webhook_retries_messenger_delivery_after_a_send_api_failure(tmp_path, monkeypatch):
+    with build_client(tmp_path) as client:
+        from app.services import facebook_webhooks
+
+        calls = []
+
+        class FakeFailureResponse:
+            status_code = 400
+            text = '{"error":{"message":"Token expired","code":190}}'
+
+            def json(self):
+                return {"error": {"message": "Token expired", "code": 190}}
+
+        class FakeSuccessResponse:
+            status_code = 200
+            text = '{"recipient_id":"psid-1","message_id":"fb-mid-2"}'
+
+            def json(self):
+                return {"recipient_id": "psid-1", "message_id": "fb-mid-2"}
+
+        def fake_post(url, params=None, json=None, timeout=None):
+            calls.append(
+                {
+                    "url": url,
+                    "params": params,
+                    "json": json,
+                    "timeout": timeout,
+                }
+            )
+            if len(calls) == 1:
+                return FakeFailureResponse()
+            return FakeSuccessResponse()
+
+        monkeypatch.setattr(facebook_webhooks.httpx, "post", fake_post)
+        platform_headers, brand_json, _ = _create_brand_and_page(client)
+
+        payload = {
+            "object": "page",
+            "entry": [
+                {
+                    "id": "1234567890",
+                    "time": 1713900000,
+                    "messaging": [
+                        {
+                            "sender": {"id": "psid-1"},
+                            "recipient": {"id": "1234567890"},
+                            "timestamp": 1713900001,
+                            "message": {
+                                "mid": "mid-1",
+                                "text": "How long does shipping take in Dhaka?",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+        first_attempt = client.post("/api/v1/facebook/webhook", json=payload)
+        assert first_attempt.status_code == 200
+        assert first_attempt.json()["errors"] == 1
+        assert len(calls) == 1
+
+        second_attempt = client.post("/api/v1/facebook/webhook", json=payload)
+        assert second_attempt.status_code == 200
+        assert second_attempt.json()["processed"] == 1
+        assert second_attempt.json()["errors"] == 0
+        assert len(calls) == 2
+
+        conversations = client.get(
+            "/api/v1/conversations",
+            headers=platform_headers,
+            params={"brand_id": brand_json["id"]},
+        )
+        assert conversations.status_code == 200
+        conversation = conversations.json()[0]
+        assert len(conversation["messages"]) == 2
+        assert conversation["messages"][1]["external_message_id"] == "fb-mid-2"
 
 
 def test_facebook_webhook_processes_page_comment_events(tmp_path):

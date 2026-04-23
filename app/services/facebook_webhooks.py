@@ -6,12 +6,78 @@ import json
 from typing import Any
 
 from fastapi import HTTPException, status
+import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app import models
 from app.api.schemas.messages import MessageProcessRequest
 from app.services.orchestrator import MessageProcessor
+
+
+class FacebookMessengerDeliveryError(RuntimeError):
+    """Raised when the Meta Messenger Send API rejects or fails a reply."""
+
+
+class FacebookMessengerClient:
+    graph_api_base_url = "https://graph.facebook.com/v25.0"
+
+    def __init__(self, page_access_token: str, timeout_seconds: float = 10.0) -> None:
+        self.page_access_token = page_access_token.strip()
+        self.timeout_seconds = timeout_seconds
+
+    def send_text_message(self, recipient_id: str, text: str) -> dict[str, Any]:
+        cleaned_recipient_id = recipient_id.strip()
+        cleaned_text = text.strip()
+        if not self.page_access_token:
+            raise FacebookMessengerDeliveryError("Facebook page access token is missing.")
+        if not cleaned_recipient_id:
+            raise FacebookMessengerDeliveryError("Messenger recipient id is missing.")
+        if not cleaned_text:
+            raise FacebookMessengerDeliveryError("Messenger reply text is empty.")
+
+        try:
+            response = httpx.post(
+                f"{self.graph_api_base_url}/me/messages",
+                params={"access_token": self.page_access_token},
+                json={
+                    "recipient": {"id": cleaned_recipient_id},
+                    "messaging_type": "RESPONSE",
+                    "message": {"text": cleaned_text},
+                },
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError as exc:
+            raise FacebookMessengerDeliveryError(f"Facebook Send API request failed: {exc}") from exc
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if response.status_code >= 400:
+            detail = self._extract_error_detail(payload) or response.text or f"HTTP {response.status_code}"
+            raise FacebookMessengerDeliveryError(f"Facebook Send API rejected the reply: {detail}")
+
+        if not isinstance(payload, dict):
+            raise FacebookMessengerDeliveryError("Facebook Send API returned an invalid JSON response.")
+
+        return payload
+
+    @staticmethod
+    def _extract_error_detail(payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+
+        error = payload.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            code = error.get("code")
+            subcode = error.get("error_subcode")
+            parts = [str(item).strip() for item in (message, code, subcode) if str(item).strip()]
+            return " | ".join(parts) if parts else None
+
+        return None
 
 
 class FacebookWebhookService:
@@ -185,7 +251,20 @@ class FacebookWebhookService:
             },
         )
         result = MessageProcessor(self.db).process(request_payload)
-        return "processed", f"Processed Messenger event for page {page.page_id} into conversation {result.conversation_id}."
+        delivery_state = self._deliver_messenger_reply(page=page, recipient_id=sender_id, result=result)
+        if delivery_state == "sent":
+            detail = (
+                f"Processed Messenger event for page {page.page_id} into conversation "
+                f"{result.conversation_id} and sent the reply through Meta."
+            )
+        elif delivery_state == "already_sent":
+            detail = (
+                f"Processed Messenger event for page {page.page_id} into conversation "
+                f"{result.conversation_id}; the Messenger reply was already delivered."
+            )
+        else:
+            detail = f"Processed Messenger event for page {page.page_id} into conversation {result.conversation_id}."
+        return "processed", detail
 
     def _handle_change_event(
         self,
@@ -273,6 +352,43 @@ class FacebookWebhookService:
             return text, metadata
 
         return "", metadata
+
+    def _deliver_messenger_reply(
+        self,
+        *,
+        page: models.FacebookPageAutomation,
+        recipient_id: str,
+        result: Any,
+    ) -> str:
+        outbound_message_id = getattr(result, "outbound_message_id", None)
+        if not outbound_message_id:
+            return "no_reply"
+
+        outbound_message = self.db.get(models.Message, outbound_message_id)
+        if outbound_message is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Generated reply {outbound_message_id} could not be loaded for Facebook delivery.",
+            )
+
+        if self._clean_text(outbound_message.external_message_id):
+            return "already_sent"
+
+        reply_text = (getattr(result, "reply_text", None) or outbound_message.text or "").strip()
+        if not reply_text:
+            return "no_reply"
+
+        try:
+            delivery = FacebookMessengerClient(page.page_access_token).send_text_message(recipient_id=recipient_id, text=reply_text)
+        except FacebookMessengerDeliveryError as exc:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+        outbound_message.external_message_id = (
+            self._clean_text(delivery.get("message_id")) or f"facebook-sent:{outbound_message.id}"
+        )
+        self.db.add(outbound_message)
+        self.db.commit()
+        return "sent"
 
     def _verify_signature_if_present(
         self,

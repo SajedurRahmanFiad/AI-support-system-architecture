@@ -38,11 +38,26 @@ class MessageProcessor:
                 )
             )
         if duplicate:
+            duplicate_reply = self.db.scalar(
+                select(models.Message)
+                .where(
+                    models.Message.conversation_id == duplicate.conversation_id,
+                    models.Message.role == "assistant",
+                    models.Message.id > duplicate.id,
+                )
+                .order_by(models.Message.id.asc())
+            )
             return MessageProcessResponse(
                 status=duplicate.status,
                 conversation_id=duplicate.conversation_id,
                 customer_id=duplicate.customer_id,
                 inbound_message_id=duplicate.id,
+                outbound_message_id=duplicate_reply.id if duplicate_reply else None,
+                reply_text=duplicate_reply.text if duplicate_reply else None,
+                confidence=duplicate_reply.confidence if duplicate_reply else None,
+                handoff_reason=duplicate_reply.handoff_reason if duplicate_reply else duplicate.handoff_reason,
+                flags=list(duplicate_reply.flags_json or duplicate.flags_json or []),
+                used_sources=list(duplicate_reply.used_sources_json or []),
             )
 
         customer = self._get_or_create_customer(brand.id, payload)
