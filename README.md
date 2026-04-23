@@ -108,7 +108,7 @@ This helps the AI reply like it remembers the ongoing conversation instead of ac
 
 ## What this app does not do
 
-- it does not include Facebook or WordPress wrappers yet
+- it does not yet include full Facebook media-download and outbound-delivery wrappers
 - it does not do true model fine-tuning inside this repo
 - it does not do live phone calls or real-time call center streaming
 - it does not include a web admin panel yet
@@ -297,6 +297,8 @@ Base prefix:
 | Route | What it does | Main inputs |
 |---|---|---|
 | `GET /api/health` | Quick health check for app, environment, and provider status | No auth, no body |
+| `GET /api/v1/facebook/webhook` | Meta webhook verification endpoint that checks the saved `verify_token` and returns `hub.challenge` | Query params `hub.mode`, `hub.verify_token`, `hub.challenge` |
+| `POST /api/v1/facebook/webhook` | Receives supported Facebook Page messaging and comment webhook events and feeds them into the normal message pipeline | Raw Meta webhook JSON body |
 
 ### Platform and admin routes (`X-Platform-Token`)
 
@@ -1343,7 +1345,7 @@ python -m app.cli create-brand --name "Test" --slug test
 
 ## Future upgrades you can add later
 
-- Facebook Messenger webhook wrapper
+- broader Facebook media download and outbound delivery support
 - WordPress plugin wrapper
 - admin dashboard
 - live order lookup
