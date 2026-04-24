@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -25,19 +26,25 @@ def detect_attachment_type(mime_type: str, filename: str | None = None) -> str:
 def save_upload(brand_id: int, upload: UploadFile) -> tuple[str, str]:
     settings = get_settings()
     data = upload.file.read()
+    mime_type = upload.content_type or "application/octet-stream"
+    return save_upload_bytes(brand_id, upload.filename or "upload.bin", data, mime_type)
+
+
+def save_upload_bytes(brand_id: int, filename: str, data: bytes, mime_type: str) -> tuple[str, str]:
+    settings = get_settings()
     if len(data) > settings.max_upload_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             detail=f"Upload exceeds {settings.max_upload_bytes} bytes.",
         )
 
-    suffix = Path(upload.filename or "upload.bin").suffix or ".bin"
+    suffix = Path(filename or "upload.bin").suffix or _suffix_for_mime_type(mime_type)
     today = datetime.now(timezone.utc)
     relative_path = Path(f"brand_{brand_id}") / f"{today:%Y}" / f"{today:%m}" / f"{uuid4().hex}{suffix}"
     absolute_path = settings.upload_path / relative_path
     absolute_path.parent.mkdir(parents=True, exist_ok=True)
     absolute_path.write_bytes(data)
-    return str(relative_path).replace("\\", "/"), upload.content_type or "application/octet-stream"
+    return str(relative_path).replace("\\", "/"), mime_type or "application/octet-stream"
 
 
 def read_file_bytes(storage_path: str) -> bytes:
@@ -46,3 +53,8 @@ def read_file_bytes(storage_path: str) -> bytes:
     if not absolute_path.exists():
         raise FileNotFoundError(storage_path)
     return absolute_path.read_bytes()
+
+
+def _suffix_for_mime_type(mime_type: str) -> str:
+    guessed = mimetypes.guess_extension(mime_type or "")
+    return guessed or ".bin"

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from app.config import get_settings
 from app.services.llm.base import AttachmentInsight, BrandContext, ConversationTurn, CustomerSnapshot
 from app.services.llm.gemini import GeminiLLMProvider
 
 
 def test_gemini_analyze_attachment_falls_back_on_provider_failure(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
     provider = GeminiLLMProvider()
 
     with patch.object(provider.client.models, "generate_content", side_effect=RuntimeError("429 RESOURCE_EXHAUSTED")):
@@ -20,6 +22,7 @@ def test_gemini_analyze_attachment_falls_back_on_provider_failure(monkeypatch):
 
 def test_gemini_match_product_candidates_returns_none_on_provider_failure(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
     provider = GeminiLLMProvider()
 
     with patch.object(provider.client.models, "generate_content", side_effect=RuntimeError("429 RESOURCE_EXHAUSTED")):
@@ -34,6 +37,7 @@ def test_gemini_match_product_candidates_returns_none_on_provider_failure(monkey
 
 def test_gemini_generate_reply_normalizes_malformed_payload(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
     provider = GeminiLLMProvider()
 
     class FakeResponse:
@@ -80,6 +84,7 @@ def test_gemini_generate_reply_normalizes_malformed_payload(monkeypatch):
 
 def test_gemini_generate_reply_retries_transient_errors(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
     provider = GeminiLLMProvider()
 
     class FakeResponse:

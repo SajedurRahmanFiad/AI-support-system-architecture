@@ -3,7 +3,78 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.services.llm.runtime import merge_brand_llm_settings, serialize_brand_llm_settings
+
+
+class BrandLLMSettingsInput(BaseModel):
+    provider: str
+    model: str | None = None
+    api_key: str | None = None
+    summary_model: str | None = None
+    embedding_model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    max_output_tokens: int | None = None
+    site_url: str | None = None
+    app_name: str | None = None
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def normalize_provider(cls, value: object) -> str:
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "google": "gemini",
+            "gemini": "gemini",
+            "openai": "openai",
+            "groq": "groq",
+            "openrouter": "openrouter",
+            "mock": "mock",
+        }
+        if normalized not in aliases:
+            raise ValueError("Unsupported LLM provider.")
+        return aliases[normalized]
+
+    @field_validator(
+        "model",
+        "api_key",
+        "summary_model",
+        "embedding_model",
+        "site_url",
+        "app_name",
+        mode="before",
+    )
+    @classmethod
+    def strip_text_values(cls, value: object) -> str | None:
+        normalized = str(value or "").strip()
+        return normalized or None
+
+    @model_validator(mode="after")
+    def validate_required_fields(self) -> "BrandLLMSettingsInput":
+        if self.provider != "mock" and not self.api_key:
+            raise ValueError("API key is required for this provider.")
+        if self.provider != "mock" and not self.model:
+            raise ValueError("Model name is required for this provider.")
+        return self
+
+
+class BrandLLMSettingsOut(BaseModel):
+    provider: str
+    provider_label: str
+    model: str
+    api_key: str | None = None
+    masked_api_key: str | None = None
+    has_api_key: bool = False
+    summary_model: str | None = None
+    embedding_model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    max_output_tokens: int | None = None
+    site_url: str | None = None
+    app_name: str | None = None
 
 
 class BrandCreate(BaseModel):
@@ -16,9 +87,12 @@ class BrandCreate(BaseModel):
     fallback_handoff_message: str = "A human teammate will continue this conversation shortly."
     public_reply_guidelines: str | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
+    llm_settings: BrandLLMSettingsInput | None = None
 
 
 class BrandUpdate(BaseModel):
+    name: str | None = None
+    slug: str | None = None
     description: str | None = None
     default_language: str | None = None
     tone_name: str | None = None
@@ -27,6 +101,7 @@ class BrandUpdate(BaseModel):
     public_reply_guidelines: str | None = None
     active: bool | None = None
     settings: dict[str, Any] | None = None
+    llm_settings: BrandLLMSettingsInput | None = None
 
 
 class BrandPromptConfigUpdate(BaseModel):
@@ -94,8 +169,6 @@ class StyleExampleOut(BaseModel):
 
 
 class BrandOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: int
     name: str
     slug: str
@@ -106,7 +179,7 @@ class BrandOut(BaseModel):
     fallback_handoff_message: str
     public_reply_guidelines: str | None
     active: bool
-    settings_json: dict[str, Any] | None
+    llm_settings: BrandLLMSettingsOut | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -125,3 +198,36 @@ class BrandPromptConfigOut(BaseModel):
     fallback_handoff_message: str
     public_reply_guidelines: str | None
     updated_at: datetime
+
+
+def serialize_brand_output(brand: Any, *, include_llm_secret: bool = False) -> BrandOut:
+    return BrandOut(
+        id=brand.id,
+        name=brand.name,
+        slug=brand.slug,
+        description=brand.description,
+        default_language=brand.default_language,
+        tone_name=brand.tone_name,
+        tone_instructions=brand.tone_instructions,
+        fallback_handoff_message=brand.fallback_handoff_message,
+        public_reply_guidelines=brand.public_reply_guidelines,
+        active=brand.active,
+        llm_settings=BrandLLMSettingsOut(**serialize_brand_llm_settings(brand, include_secret=include_llm_secret)),
+        created_at=brand.created_at,
+        updated_at=brand.updated_at,
+    )
+
+
+def apply_brand_payload(brand: Any, payload: BrandCreate | BrandUpdate) -> None:
+    data = payload.model_dump(exclude_unset=True)
+    llm_settings = data.pop("llm_settings", None)
+    settings_json = data.pop("settings", None)
+
+    for field, value in data.items():
+        setattr(brand, field, value)
+
+    merged_settings = brand.settings_json if settings_json is None else settings_json
+    if llm_settings is not None:
+        merged_settings = merge_brand_llm_settings(merged_settings, llm_settings)
+    if settings_json is not None or llm_settings is not None:
+        setattr(brand, "settings_json", merged_settings)

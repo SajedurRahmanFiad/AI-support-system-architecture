@@ -36,7 +36,6 @@ def process_pending_jobs(db: Session, limit: int = 10) -> list[models.Job]:
         .limit(limit)
     )
     jobs = list(db.scalars(statement))
-    provider = build_llm_provider()
     results: list[models.Job] = []
 
     for job in jobs:
@@ -56,7 +55,8 @@ def process_pending_jobs(db: Session, limit: int = 10) -> list[models.Job]:
                 document = db.get(models.KnowledgeDocument, document_id)
                 if not document:
                     raise ValueError("Document not found for job.")
-                knowledge.index_document(db, provider, document)
+                brand = db.get(models.Brand, document.brand_id)
+                knowledge.index_document(db, build_llm_provider(brand), document)
                 job.result_json = {"document_id": document.id, "status": document.status}
             else:
                 raise ValueError(f"Unsupported job kind: {job.kind}")

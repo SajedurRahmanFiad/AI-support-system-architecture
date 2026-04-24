@@ -25,6 +25,7 @@ router = APIRouter(prefix="/v1/knowledge", dependencies=[Depends(require_platfor
 
 @router.post("/documents", response_model=KnowledgeDocumentOut)
 def create_document(payload: KnowledgeDocumentCreate, db: DbSession) -> models.KnowledgeDocument:
+    brand = get_brand_or_404(db, payload.brand_id)
     document = models.KnowledgeDocument(
         brand_id=payload.brand_id,
         title=payload.title,
@@ -42,15 +43,16 @@ def create_document(payload: KnowledgeDocumentCreate, db: DbSession) -> models.K
         enqueue_job(db, "reindex_document", {"document_id": document.id}, payload.brand_id)
         return document
 
-    provider = build_llm_provider()
+    provider = build_llm_provider(brand)
     return knowledge.index_document(db, provider, document)
 
 
 @router.post("/conversation-examples", response_model=KnowledgeDocumentOut)
 def create_conversation_example(payload: KnowledgeConversationExampleCreate, db: DbSession) -> models.KnowledgeDocument:
+    brand = get_brand_or_404(db, payload.brand_id)
     return knowledge.upsert_conversation_example_document(
         db,
-        build_llm_provider(),
+        build_llm_provider(brand),
         brand_id=payload.brand_id,
         conversation_id=payload.conversation_id,
         customer_message_id=payload.customer_message_id,
@@ -66,13 +68,17 @@ def create_conversation_example(payload: KnowledgeConversationExampleCreate, db:
 @router.post("/manual-conversation-examples", response_model=KnowledgeDocumentOut)
 def create_manual_conversation_example(payload: KnowledgeManualConversationExampleCreate, db: DbSession) -> models.KnowledgeDocument:
     target_brand_id = payload.brand_id
+    target_brand = None
     if payload.global_example:
-        target_brand_id = ensure_global_brand(db).id
+        target_brand = ensure_global_brand(db)
+        target_brand_id = target_brand.id
+    elif target_brand_id:
+        target_brand = get_brand_or_404(db, target_brand_id)
 
     if payload.messages:
         return knowledge.create_manual_conversation_transcript_document(
             db,
-            build_llm_provider(),
+            build_llm_provider(target_brand),
             brand_id=target_brand_id or 0,
             messages=[message.model_dump() for message in payload.messages],
             title=payload.title,
@@ -86,7 +92,7 @@ def create_manual_conversation_example(payload: KnowledgeManualConversationExamp
 
     return knowledge.create_manual_conversation_example_document(
         db,
-        build_llm_provider(),
+        build_llm_provider(target_brand),
         brand_id=target_brand_id or 0,
         customer_text=payload.customer_text or "",
         approved_reply=payload.approved_reply or "",
@@ -156,7 +162,7 @@ def update_document(payload: KnowledgeDocumentUpdate, document_id: int, db: DbSe
     db.refresh(document)
 
     if reindex_needed:
-        return knowledge.index_document(db, build_llm_provider(), document)
+        return knowledge.index_document(db, build_llm_provider(db.get(models.Brand, document.brand_id)), document)
     return document
 
 
@@ -183,12 +189,18 @@ def reindex_document(document_id: int, payload: KnowledgeReindexRequest, db: DbS
         db.refresh(document)
         enqueue_job(db, "reindex_document", {"document_id": document.id}, document.brand_id)
         return document
-    return knowledge.index_document(db, build_llm_provider(), document)
+    return knowledge.index_document(db, build_llm_provider(db.get(models.Brand, document.brand_id)), document)
 
 
 @router.post("/search", response_model=KnowledgeSearchResponse)
 def search_documents(payload: KnowledgeSearchRequest, db: DbSession) -> KnowledgeSearchResponse:
-    hits = knowledge.search_knowledge(db, build_llm_provider(), payload.brand_id, payload.query, payload.top_k)
+    hits = knowledge.search_knowledge(
+        db,
+        build_llm_provider(get_brand_or_404(db, payload.brand_id)),
+        payload.brand_id,
+        payload.query,
+        payload.top_k,
+    )
     return KnowledgeSearchResponse(
         hits=[
             KnowledgeSearchHit(

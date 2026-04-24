@@ -3,7 +3,9 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from pathlib import PurePosixPath
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import HTTPException, status
 import httpx
@@ -13,6 +15,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.api.schemas.messages import MessageProcessRequest
 from app.services.orchestrator import MessageProcessor
+from app.services.storage import detect_attachment_type, save_upload_bytes
 
 
 class FacebookMessengerDeliveryError(RuntimeError):
@@ -221,14 +224,32 @@ class FacebookWebhookService:
         if sender_id == page.page_id:
             return "ignored", f"Ignored self-authored Messenger event for page {page.page_id}."
 
-        text, metadata = self._extract_messaging_content(event)
-        if not text:
+        external_message_id = (
+            self._clean_text(((event.get("message") or {}) if isinstance(event.get("message"), dict) else {}).get("mid"))
+            or self._clean_text(((event.get("postback") or {}) if isinstance(event.get("postback"), dict) else {}).get("mid"))
+            or self._clean_text(event.get("mid"))
+        )
+        skip_attachment_capture = bool(
+            external_message_id
+            and self.db.scalar(
+                select(models.Message.id).where(
+                    models.Message.brand_id == page.brand_id,
+                    models.Message.external_message_id == external_message_id,
+                )
+            )
+        )
+        text, metadata, attachment_ids = self._extract_messaging_content(
+            page,
+            event,
+            capture_attachments=not skip_attachment_capture,
+        )
+        if not text and not attachment_ids:
             return "ignored", f"Ignored Messenger event for page {page.page_id} because it had no text or supported fallback content."
 
         external_message_id = (
             self._clean_text(metadata.get("message_mid"))
             or self._clean_text(metadata.get("postback_mid"))
-            or self._clean_text(event.get("mid"))
+            or external_message_id
         )
         request_payload = MessageProcessRequest(
             brand_id=page.brand_id,
@@ -238,6 +259,7 @@ class FacebookWebhookService:
             conversation_external_id=f"facebook:{page.page_id}:{sender_id}",
             external_message_id=external_message_id,
             text=text,
+            attachment_ids=attachment_ids,
             metadata={
                 "source_platform": "facebook",
                 "event_type": "messaging",
@@ -323,8 +345,15 @@ class FacebookWebhookService:
         result = MessageProcessor(self.db).process(request_payload)
         return "processed", f"Processed comment event for page {page.page_id} into conversation {result.conversation_id}."
 
-    def _extract_messaging_content(self, event: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    def _extract_messaging_content(
+        self,
+        page: models.FacebookPageAutomation,
+        event: dict[str, Any],
+        *,
+        capture_attachments: bool = True,
+    ) -> tuple[str, dict[str, Any], list[int]]:
         metadata: dict[str, Any] = {}
+        attachment_ids: list[int] = []
 
         message = event.get("message")
         if isinstance(message, dict):
@@ -333,15 +362,26 @@ class FacebookWebhookService:
             attachments = message.get("attachments") if isinstance(message.get("attachments"), list) else []
             if attachments:
                 metadata["attachments"] = attachments
+                attachment_ids, attachment_errors = (
+                    self._capture_supported_attachments(page, attachments)
+                    if capture_attachments
+                    else ([], [])
+                )
+                if attachment_ids:
+                    metadata["captured_attachment_ids"] = attachment_ids
+                if attachment_errors:
+                    metadata["attachment_download_errors"] = attachment_errors
             quick_reply = message.get("quick_reply") if isinstance(message.get("quick_reply"), dict) else None
             if quick_reply:
                 metadata["quick_reply_payload"] = self._clean_text(quick_reply.get("payload"))
             if message_text:
-                return message_text, metadata
+                return message_text, metadata, attachment_ids
+            if attachment_ids:
+                return "", metadata, attachment_ids
             if attachments:
                 attachment_types = [self._clean_text(item.get("type")) or "attachment" for item in attachments if isinstance(item, dict)]
                 summary = ", ".join(dict.fromkeys(attachment_types)) or "attachment"
-                return f"[Facebook attachment received: {summary}]", metadata
+                return f"[Facebook attachment received: {summary}]", metadata, attachment_ids
 
         postback = event.get("postback")
         if isinstance(postback, dict):
@@ -349,9 +389,126 @@ class FacebookWebhookService:
             metadata["postback_title"] = self._clean_text(postback.get("title"))
             metadata["postback_payload"] = self._clean_text(postback.get("payload"))
             text = metadata["postback_title"] or metadata["postback_payload"] or "[Facebook postback received]"
-            return text, metadata
+            return text, metadata, attachment_ids
 
-        return "", metadata
+        return "", metadata, attachment_ids
+
+    def _capture_supported_attachments(
+        self,
+        page: models.FacebookPageAutomation,
+        attachments: list[Any],
+    ) -> tuple[list[int], list[str]]:
+        captured_ids: list[int] = []
+        errors: list[str] = []
+
+        for index, attachment in enumerate(attachments):
+            if not isinstance(attachment, dict):
+                continue
+            attachment_type = self._clean_text(attachment.get("type")) or "attachment"
+            if attachment_type not in {"image", "audio"}:
+                continue
+
+            try:
+                captured_ids.append(self._store_supported_attachment(page, attachment, attachment_type, index))
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"{attachment_type}:{exc}")
+
+        return captured_ids, errors
+
+    def _store_supported_attachment(
+        self,
+        page: models.FacebookPageAutomation,
+        attachment: dict[str, Any],
+        attachment_type: str,
+        index: int,
+    ) -> int:
+        payload = attachment.get("payload") if isinstance(attachment.get("payload"), dict) else {}
+        source_url = self._clean_text(payload.get("url"))
+        if not source_url:
+            raise RuntimeError("attachment URL missing")
+
+        response = self._download_attachment(source_url, page.page_access_token)
+        mime_type = self._clean_content_type(response.headers.get("content-type")) or self._default_mime_type(attachment_type)
+        filename = self._attachment_filename(source_url, mime_type, attachment_type, index)
+        storage_path, stored_mime_type = save_upload_bytes(page.brand_id, filename, response.content, mime_type)
+
+        row = models.Attachment(
+            brand_id=page.brand_id,
+            attachment_type=detect_attachment_type(stored_mime_type, filename),
+            mime_type=stored_mime_type,
+            original_filename=filename,
+            storage_path=storage_path,
+            metadata_json={
+                "source_platform": "facebook",
+                "facebook_attachment_type": attachment_type,
+                "facebook_attachment_id": self._clean_text(payload.get("attachment_id")),
+                "facebook_title": self._clean_text(payload.get("title")),
+            },
+        )
+        self.db.add(row)
+        self.db.flush()
+        return row.id
+
+    def _download_attachment(self, source_url: str, page_access_token: str) -> httpx.Response:
+        try:
+            response = httpx.get(source_url, timeout=20.0, follow_redirects=True)
+        except httpx.HTTPError as exc:
+            raise RuntimeError(f"attachment download failed: {exc}") from exc
+
+        if response.status_code in {401, 403} and page_access_token:
+            try:
+                response = httpx.get(
+                    source_url,
+                    params={"access_token": page_access_token},
+                    timeout=20.0,
+                    follow_redirects=True,
+                )
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"attachment download failed: {exc}") from exc
+
+        if response.status_code >= 400:
+            raise RuntimeError(f"attachment download returned HTTP {response.status_code}")
+
+        return response
+
+    def _attachment_filename(self, source_url: str, mime_type: str, attachment_type: str, index: int) -> str:
+        parsed = urlparse(source_url)
+        candidate = PurePosixPath(parsed.path or "").name
+        suffix = PurePosixPath(candidate).suffix
+        if not suffix:
+            suffix = self._mime_suffix(mime_type)
+            candidate = f"facebook-{attachment_type}-{index + 1}{suffix}"
+        return candidate or f"facebook-{attachment_type}-{index + 1}{suffix or '.bin'}"
+
+    @staticmethod
+    def _clean_content_type(value: Any) -> str | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        return normalized.split(";", 1)[0].strip() or None
+
+    @staticmethod
+    def _default_mime_type(attachment_type: str) -> str:
+        if attachment_type == "image":
+            return "image/jpeg"
+        if attachment_type == "audio":
+            return "audio/mpeg"
+        return "application/octet-stream"
+
+    @staticmethod
+    def _mime_suffix(mime_type: str) -> str:
+        mapping = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+            "image/gif": ".gif",
+            "audio/mpeg": ".mp3",
+            "audio/mp3": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/mp4": ".m4a",
+            "audio/wav": ".wav",
+        }
+        return mapping.get(mime_type, ".bin")
 
     def _deliver_messenger_reply(
         self,

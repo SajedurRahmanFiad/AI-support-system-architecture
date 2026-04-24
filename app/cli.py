@@ -63,6 +63,10 @@ def cmd_doctor(_: argparse.Namespace) -> None:
         problems.append("GEMINI_API_KEY is missing.")
     if settings.llm_provider == "groq" and not settings.groq_api_key:
         problems.append("GROQ_API_KEY is missing.")
+    if settings.llm_provider == "openai" and not settings.openai_api_key:
+        problems.append("OPENAI_API_KEY is missing.")
+    if settings.llm_provider == "openrouter" and not settings.openrouter_api_key:
+        problems.append("OPENROUTER_API_KEY is missing.")
     if settings.speech_provider == "google_cloud" and not settings.google_cloud_project_id:
         problems.append("GOOGLE_CLOUD_PROJECT_ID is missing for Google Cloud Speech.")
     if settings.platform_api_token == "change-this-platform-token":

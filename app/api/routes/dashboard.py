@@ -9,7 +9,7 @@ from sqlalchemy import case, func, select
 from app import models
 from app.api.deps import DbSession, require_platform_access
 from app.api.routes.health import healthcheck
-from app.api.schemas.brands import BrandOut
+from app.api.schemas.brands import serialize_brand_output
 from app.api.schemas.dashboard import (
     BrandDashboardStatsOut,
     BrandDashboardSummaryOut,
@@ -78,7 +78,7 @@ def list_dashboard_brands(db: DbSession) -> list[BrandDashboardSummaryOut]:
 
     summaries: list[BrandDashboardSummaryOut] = []
     for brand in brands:
-        brand_data = BrandOut.model_validate(brand).model_dump()
+        brand_data = serialize_brand_output(brand, include_llm_secret=True).model_dump()
         stats = BrandDashboardStatsOut(
             rules=rules.get(brand.id, 0),
             style_examples=examples.get(brand.id, 0),

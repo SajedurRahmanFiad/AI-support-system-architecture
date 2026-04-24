@@ -20,14 +20,21 @@ from app.services.llm.base import (
     ReplyDecision,
     SummaryResult,
 )
+from app.services.llm.runtime import LLMRuntimeConfig, resolve_llm_runtime_config
 
 
 class GeminiLLMProvider(LLMProvider):
     provider_name = "gemini"
 
-    def __init__(self) -> None:
+    def __init__(self, runtime_config: LLMRuntimeConfig | None = None) -> None:
         self.settings = get_settings()
-        self.client = genai.Client(api_key=self.settings.gemini_api_key)
+        self.runtime = runtime_config or resolve_llm_runtime_config(
+            settings=self.settings,
+            preferred_provider=self.provider_name,
+        )
+        if not self.runtime.api_key:
+            raise RuntimeError("Gemini provider requires an API key.")
+        self.client = genai.Client(api_key=self.runtime.api_key)
 
     def generate_reply(
         self,
@@ -39,7 +46,7 @@ class GeminiLLMProvider(LLMProvider):
         attachment_insights: list[AttachmentInsight],
     ) -> ReplyDecision:
         prompt = self._build_reply_prompt(brand, customer, history, incoming_text, knowledge, attachment_insights)
-        response = self._generate_content(model=self.settings.gemini_model, contents=prompt)
+        response = self._generate_content(model=self.runtime.model, contents=prompt)
         payload = self._extract_json(getattr(response, "text", "") or "")
         reply_text = self._normalize_text(payload.get("reply_text")) or brand.fallback_handoff_message
         return ReplyDecision(
@@ -61,7 +68,7 @@ class GeminiLLMProvider(LLMProvider):
             f"Brand: {brand.name}\n"
             f"History:\n{self._format_history(history)}"
         )
-        response = self._generate_content(model=self.settings.gemini_summary_model, contents=prompt)
+        response = self._generate_content(model=self.runtime.summary_model or self.runtime.model, contents=prompt)
         payload = self._extract_json(getattr(response, "text", "") or "")
         return SummaryResult(
             summary=self._normalize_text(payload.get("summary")) or "",
@@ -77,7 +84,7 @@ class GeminiLLMProvider(LLMProvider):
         )
         try:
             response = self._generate_content(
-                model=self.settings.gemini_model,
+                model=self.runtime.model,
                 contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
             )
             payload = self._extract_json(getattr(response, "text", "") or "")
@@ -100,7 +107,10 @@ class GeminiLLMProvider(LLMProvider):
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
-        response = self.client.models.embed_content(model=self.settings.gemini_embedding_model, contents=texts)
+        response = self.client.models.embed_content(
+            model=self.runtime.embedding_model or self.settings.gemini_embedding_model,
+            contents=texts,
+        )
         embeddings = getattr(response, "embeddings", None)
         if embeddings is None:
             embedding = getattr(response, "embedding", None)
@@ -112,9 +122,10 @@ class GeminiLLMProvider(LLMProvider):
         return vectors
 
     def embed_image(self, image_data: bytes) -> list[float]:
-        if "embedding-2" in self.settings.gemini_embedding_model:
+        embedding_model = self.runtime.embedding_model or self.settings.gemini_embedding_model
+        if "embedding-2" in embedding_model:
             response = self.client.models.embed_content(
-                model=self.settings.gemini_embedding_model,
+                model=embedding_model,
                 contents=[
                     types.Part.from_bytes(
                         data=image_data,
@@ -151,7 +162,7 @@ class GeminiLLMProvider(LLMProvider):
         )
         try:
             response = self._generate_content(
-                model=self.settings.gemini_model,
+                model=self.runtime.model,
                 contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
             )
             payload = self._extract_json(getattr(response, "text", "") or "")
@@ -269,6 +280,9 @@ class GeminiLLMProvider(LLMProvider):
         last_error: Exception | None = None
         for attempt in range(3):
             try:
+                config = self._generation_config()
+                if config is not None:
+                    return self.client.models.generate_content(model=model, contents=contents, config=config)
                 return self.client.models.generate_content(model=model, contents=contents)
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
@@ -278,6 +292,21 @@ class GeminiLLMProvider(LLMProvider):
         if last_error is not None:
             raise last_error
         raise RuntimeError("Gemini generate_content failed without an exception.")
+
+    def _generation_config(self) -> types.GenerateContentConfig | None:
+        if (
+            self.runtime.temperature is None
+            and self.runtime.top_p is None
+            and self.runtime.top_k is None
+            and self.runtime.max_output_tokens is None
+        ):
+            return None
+        return types.GenerateContentConfig(
+            temperature=self.runtime.temperature,
+            top_p=self.runtime.top_p,
+            top_k=self.runtime.top_k,
+            max_output_tokens=self.runtime.max_output_tokens,
+        )
 
     def _is_retryable_error(self, exc: Exception) -> bool:
         message = str(exc).upper()

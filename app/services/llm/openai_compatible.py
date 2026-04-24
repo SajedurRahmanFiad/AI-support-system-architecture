@@ -1,14 +1,14 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import time
 from typing import Any
 
-from groq import Groq
+import httpx
 
 from app.config import get_settings
-from app.json_utils import to_json_compatible
 from app.services.llm.base import (
     AttachmentInsight,
     BrandContext,
@@ -22,18 +22,14 @@ from app.services.llm.base import (
 from app.services.llm.runtime import LLMRuntimeConfig, resolve_llm_runtime_config
 
 
-class GroqLLMProvider(LLMProvider):
-    provider_name = "groq"
-
+class OpenAICompatibleLLMProvider(LLMProvider):
     def __init__(self, runtime_config: LLMRuntimeConfig | None = None) -> None:
         self.settings = get_settings()
-        self.runtime = runtime_config or resolve_llm_runtime_config(
-            settings=self.settings,
-            preferred_provider=self.provider_name,
-        )
+        self.runtime = runtime_config or resolve_llm_runtime_config()
+        self.provider_name = self.runtime.provider
+        self.base_url = (self.runtime.base_url or "https://api.openai.com/v1").rstrip("/")
         if not self.runtime.api_key:
-            raise RuntimeError("Groq provider requires an API key.")
-        self.client = Groq(api_key=self.runtime.api_key)
+            raise RuntimeError(f"{self.provider_name} provider requires an API key.")
 
     def generate_reply(
         self,
@@ -45,11 +41,8 @@ class GroqLLMProvider(LLMProvider):
         attachment_insights: list[AttachmentInsight],
     ) -> ReplyDecision:
         prompt = self._build_reply_prompt(brand, customer, history, incoming_text, knowledge, attachment_insights)
-        response = self._generate_content(model=self.runtime.model, messages=[{"role": "user", "content": prompt}])
-        
-        response_text = response.choices[0].message.content if response.choices else ""
+        response_text, usage = self._chat_text_completion(model=self.runtime.model, prompt=prompt)
         payload = self._extract_json(response_text or "")
-        
         reply_text = self._normalize_text(payload.get("reply_text")) or brand.fallback_handoff_message
         return ReplyDecision(
             status=self._normalize_text(payload.get("status")) or "handoff",
@@ -60,7 +53,7 @@ class GroqLLMProvider(LLMProvider):
             flags=self._normalize_string_list(payload.get("flags")),
             used_knowledge_ids=self._normalize_int_list(payload.get("used_knowledge_ids")),
             internal_notes=self._normalize_text(payload.get("internal_notes")),
-            token_usage=self._serialize_usage_metadata(response.usage if response else None),
+            token_usage=usage,
         )
 
     def summarize_conversation(self, brand: BrandContext, history: list[ConversationTurn]) -> SummaryResult:
@@ -70,44 +63,229 @@ class GroqLLMProvider(LLMProvider):
             f"Brand: {brand.name}\n"
             f"History:\n{self._format_history(history)}"
         )
-        response = self._generate_content(
+        response_text, _usage = self._chat_text_completion(
             model=self.runtime.summary_model or self.runtime.model,
-            messages=[{"role": "user", "content": prompt}],
+            prompt=prompt,
         )
-        response_text = response.choices[0].message.content if response.choices else ""
         payload = self._extract_json(response_text or "")
-        
         return SummaryResult(
             summary=self._normalize_text(payload.get("summary")) or "",
             facts=self._normalize_dict_list(payload.get("facts")),
         )
 
     def analyze_attachment(self, attachment_type: str, mime_type: str, data: bytes) -> AttachmentInsight:
-        # Groq does not support image/audio analysis natively
-        # Return a fallback response
-        return AttachmentInsight(
-            attachment_id=0,
-            attachment_type=attachment_type,
-            summary=self._fallback_attachment_summary(attachment_type, mime_type, data),
-            transcript=None,
-            extracted_text=None,
+        if attachment_type != "image":
+            return AttachmentInsight(
+                attachment_id=0,
+                attachment_type=attachment_type,
+                summary=self._fallback_attachment_summary(attachment_type, mime_type, data),
+            )
+
+        prompt = (
+            "Analyze this customer image for an ecommerce support agent. "
+            "Return JSON only with keys summary, transcript, extracted_text. "
+            "summary should explain what the attachment means for support. "
+            "transcript is only for audio. extracted_text is for visible text in images or documents."
         )
+        try:
+            response_text, _usage = self._chat_image_completion(
+                model=self.runtime.model,
+                prompt=prompt,
+                mime_type=mime_type,
+                data=data,
+            )
+            payload = self._extract_json(response_text or "")
+            return AttachmentInsight(
+                attachment_id=0,
+                attachment_type=attachment_type,
+                summary=payload.get("summary", f"{attachment_type} attachment analyzed."),
+                transcript=payload.get("transcript"),
+                extracted_text=payload.get("extracted_text"),
+            )
+        except Exception:
+            return AttachmentInsight(
+                attachment_id=0,
+                attachment_type=attachment_type,
+                summary=self._fallback_attachment_summary(attachment_type, mime_type, data),
+                transcript=None,
+                extracted_text=None,
+            )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
-        # Groq does not support embeddings natively
-        # Return mock embeddings based on text hash
         if not texts:
             return []
+        if not self.runtime.embedding_model:
+            return [self._hashed_vector(text) for text in texts]
+
+        payload = {
+            "model": self.runtime.embedding_model,
+            "input": texts,
+        }
+        response = self._post_json("/embeddings", payload)
+        data = response.get("data")
+        if not isinstance(data, list):
+            return [self._hashed_vector(text) for text in texts]
+
         vectors: list[list[float]] = []
-        for text in texts:
-            vector = self._hashed_vector(text)
-            vectors.append(vector)
+        for index, item in enumerate(data):
+            embedding = item.get("embedding") if isinstance(item, dict) else None
+            if isinstance(embedding, list) and embedding:
+                vectors.append([float(value) for value in embedding])
+            else:
+                vectors.append(self._hashed_vector(texts[index]))
         return vectors
 
     def embed_image(self, image_data: bytes) -> list[float]:
-        # Groq does not support image embeddings
-        # Return a mock embedding based on image hash
-        return self._hashed_vector(image_data.hex())
+        insight = self.analyze_attachment("image", "image/jpeg", image_data)
+        text = " ".join(part for part in [insight.summary, insight.extracted_text] if part)
+        vectors = self.embed_texts([text]) if text else []
+        return vectors[0] if vectors else self._hashed_vector(image_data.hex())
+
+    def match_product_candidates(
+        self,
+        mime_type: str,
+        data: bytes,
+        candidates: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        if not candidates:
+            return None
+
+        prompt = (
+            "You are matching a customer image to the most likely product from a small candidate list. "
+            "Use the image itself as the main signal. "
+            "Return JSON only with keys: matched, matched_candidate_id, confidence, explanation. "
+            "Set matched to false if none of the candidates is a confident match.\n\n"
+            f"Candidates:\n{json.dumps(candidates, ensure_ascii=True)}"
+        )
+        try:
+            response_text, _usage = self._chat_image_completion(
+                model=self.runtime.model,
+                prompt=prompt,
+                mime_type=mime_type,
+                data=data,
+            )
+            payload = self._extract_json(response_text or "")
+            return payload or None
+        except Exception:
+            return None
+
+    def _chat_text_completion(self, *, model: str, prompt: str) -> tuple[str, dict[str, Any]]:
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        response = self._post_json("/chat/completions", payload)
+        return self._extract_message_text(response), self._extract_usage(response)
+
+    def _chat_image_completion(self, *, model: str, prompt: str, mime_type: str, data: bytes) -> tuple[str, dict[str, Any]]:
+        payload = {
+            "model": model,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": self._data_url(mime_type, data),
+                                "detail": "auto",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+        response = self._post_json("/chat/completions", payload)
+        return self._extract_message_text(response), self._extract_usage(response)
+
+    def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                merged_payload = dict(payload)
+                if path == "/chat/completions":
+                    if self.runtime.temperature is not None:
+                        merged_payload["temperature"] = self.runtime.temperature
+                    if self.runtime.top_p is not None:
+                        merged_payload["top_p"] = self.runtime.top_p
+                    if self.runtime.max_output_tokens is not None:
+                        merged_payload["max_tokens"] = self.runtime.max_output_tokens
+                    if self.runtime.top_k is not None and self.provider_name == "openrouter":
+                        merged_payload["top_k"] = self.runtime.top_k
+
+                response = httpx.post(
+                    f"{self.base_url}{path}",
+                    headers=self._headers(),
+                    json=merged_payload,
+                    timeout=30.0,
+                )
+                try:
+                    data = response.json()
+                except ValueError:
+                    data = {"error": {"message": response.text}}
+
+                if response.status_code >= 400:
+                    detail = self._extract_error_detail(data) or response.text or f"HTTP {response.status_code}"
+                    raise RuntimeError(detail)
+
+                if not isinstance(data, dict):
+                    raise RuntimeError("Provider returned an invalid JSON response.")
+                return data
+            except Exception as exc:  # noqa: BLE001
+                last_error = exc
+                if not self._is_retryable_error(exc) or attempt == 2:
+                    raise
+                time.sleep(float(attempt + 1))
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("OpenAI-compatible completion failed without an exception.")
+
+    def _headers(self) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self.runtime.api_key}",
+            "Content-Type": "application/json",
+        }
+        headers.update(self.runtime.extra_headers)
+        return headers
+
+    def _extract_message_text(self, payload: dict[str, Any]) -> str:
+        choices = payload.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return ""
+        message = choices[0].get("message") if isinstance(choices[0], dict) else None
+        if not isinstance(message, dict):
+            return ""
+        content = message.get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            return "\n".join(parts)
+        return ""
+
+    def _extract_usage(self, payload: dict[str, Any]) -> dict[str, Any]:
+        usage = payload.get("usage")
+        return usage if isinstance(usage, dict) else {}
+
+    @staticmethod
+    def _extract_error_detail(payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+        error = payload.get("error")
+        if not isinstance(error, dict):
+            return None
+        message = str(error.get("message", "")).strip()
+        code = str(error.get("code", "")).strip()
+        parts = [item for item in (message, code) if item]
+        return " | ".join(parts) if parts else None
 
     def _build_reply_prompt(
         self,
@@ -202,28 +380,6 @@ class GroqLLMProvider(LLMProvider):
             )
         return "Reply in the customer's apparent preferred language."
 
-    def _generate_content(self, *, model: str, messages: list[dict[str, str]]) -> Any:
-        last_error: Exception | None = None
-        for attempt in range(3):
-            try:
-                kwargs: dict[str, Any] = {
-                    "model": model,
-                    "messages": messages,
-                    "temperature": self.runtime.temperature if self.runtime.temperature is not None else 0.7,
-                    "max_tokens": self.runtime.max_output_tokens or 1024,
-                }
-                if self.runtime.top_p is not None:
-                    kwargs["top_p"] = self.runtime.top_p
-                return self.client.chat.completions.create(**kwargs)
-            except Exception as exc:  # noqa: BLE001
-                last_error = exc
-                if not self._is_retryable_error(exc) or attempt == 2:
-                    raise
-                time.sleep(float(attempt + 1))
-        if last_error is not None:
-            raise last_error
-        raise RuntimeError("Groq generate_content failed without an exception.")
-
     def _is_retryable_error(self, exc: Exception) -> bool:
         message = str(exc).upper()
         retry_markers = (
@@ -234,16 +390,9 @@ class GroqLLMProvider(LLMProvider):
             "RATE_LIMIT",
             "RETRYINFO",
             "TOO MANY REQUESTS",
+            "TIMEOUT",
         )
         return any(marker in message for marker in retry_markers)
-
-    def _serialize_usage_metadata(self, usage_metadata: Any) -> dict[str, Any]:
-        if not usage_metadata:
-            return {}
-        serialized = to_json_compatible(usage_metadata)
-        if isinstance(serialized, dict):
-            return serialized
-        return {"value": serialized}
 
     def _normalize_text(self, value: Any) -> str | None:
         if value is None:
@@ -299,12 +448,13 @@ class GroqLLMProvider(LLMProvider):
         return []
 
     def _hashed_vector(self, text: str) -> list[float]:
-        """Generate a deterministic vector from text hash for embedding fallback."""
-        hash_digest = hashlib.sha256(text.encode()).digest()
-        # Convert hash bytes to normalized floats in range [-1, 1]
-        vector = [float((byte - 128) / 128.0) for byte in hash_digest[:384]]  # 384 dimensions
-        return vector
+        digest = hashlib.sha256(text.encode("utf-8")).digest()
+        return [float((byte - 128) / 128.0) for byte in digest[:24]]
 
     def _fallback_attachment_summary(self, attachment_type: str, mime_type: str, data: bytes) -> str:
         digest = hashlib.sha256(data).hexdigest()[:16]
         return f"{attachment_type} attachment received ({mime_type}, {len(data)} bytes, fingerprint {digest})."
+
+    def _data_url(self, mime_type: str, data: bytes) -> str:
+        encoded = base64.b64encode(data).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"

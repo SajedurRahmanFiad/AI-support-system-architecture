@@ -26,6 +26,7 @@ class MessageProcessor:
 
     def process(self, payload: MessageProcessRequest) -> MessageProcessResponse:
         brand = get_brand_or_404(self.db, payload.brand_id)
+        self.provider = build_llm_provider(brand)
         if not brand.active:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Brand is inactive.")
 

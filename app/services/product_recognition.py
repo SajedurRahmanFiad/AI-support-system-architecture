@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.config import get_settings
+from app.services.brand_service import get_brand_or_404
 from app.services.llm.factory import build_llm_provider
 from app.services.llm.base import AttachmentInsight
 
@@ -18,7 +19,7 @@ class ProductRecognizer:
     def __init__(self, db: Session, brand_id: int) -> None:
         self.db = db
         self.brand_id = brand_id
-        self.provider = build_llm_provider()
+        self.provider = build_llm_provider(get_brand_or_404(db, brand_id))
 
     def add_product_image(
         self,

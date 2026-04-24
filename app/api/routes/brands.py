@@ -4,6 +4,7 @@ from sqlalchemy import select
 from app import models
 from app.api.deps import DbSession, require_platform_access
 from app.api.schemas.brands import (
+    apply_brand_payload,
     BrandCreate,
     BrandOut,
     BrandRuleCreate,
@@ -11,6 +12,7 @@ from app.api.schemas.brands import (
     BrandRuleUpdate,
     BrandUpdate,
     BrandWithSecretOut,
+    serialize_brand_output,
     StyleExampleCreate,
     StyleExampleOut,
     StyleExampleUpdate,
@@ -35,41 +37,47 @@ def _get_style_example_or_404(db: DbSession, brand_id: int, example_id: int) -> 
 
 
 @router.get("", response_model=list[BrandOut])
-def list_brands(db: DbSession) -> list[models.Brand]:
-    return list(
+def list_brands(db: DbSession) -> list[BrandOut]:
+    rows = list(
         db.scalars(
             select(models.Brand)
             .where(models.Brand.slug != GLOBAL_BRAND_SLUG)
             .order_by(models.Brand.created_at.desc())
         )
     )
+    return [serialize_brand_output(row, include_llm_secret=True) for row in rows]
 
 
 @router.post("", response_model=BrandWithSecretOut)
 def create_brand_route(payload: BrandCreate, db: DbSession) -> BrandWithSecretOut:
-    brand, api_key = create_brand(db, payload.model_dump())
-    base = BrandOut.model_validate(brand).model_dump()
+    brand, api_key = create_brand(
+        db,
+        {
+            **payload.model_dump(exclude={"llm_settings"}),
+            "settings": payload.settings,
+        },
+    )
+    apply_brand_payload(brand, payload)
+    db.add(brand)
+    db.commit()
+    db.refresh(brand)
+    base = serialize_brand_output(brand, include_llm_secret=True).model_dump()
     return BrandWithSecretOut(**base, api_key=api_key)
 
 
 @router.get("/{brand_id}", response_model=BrandOut)
-def get_brand(brand_id: int, db: DbSession) -> models.Brand:
-    return get_brand_or_404(db, brand_id)
+def get_brand(brand_id: int, db: DbSession) -> BrandOut:
+    return serialize_brand_output(get_brand_or_404(db, brand_id), include_llm_secret=True)
 
 
 @router.patch("/{brand_id}", response_model=BrandOut)
-def update_brand(brand_id: int, payload: BrandUpdate, db: DbSession) -> models.Brand:
+def update_brand(brand_id: int, payload: BrandUpdate, db: DbSession) -> BrandOut:
     brand = get_brand_or_404(db, brand_id)
-    data = payload.model_dump(exclude_unset=True)
-    for field, value in data.items():
-        if field == "settings":
-            setattr(brand, "settings_json", value)
-        else:
-            setattr(brand, field, value)
+    apply_brand_payload(brand, payload)
     db.add(brand)
     db.commit()
     db.refresh(brand)
-    return brand
+    return serialize_brand_output(brand, include_llm_secret=True)
 
 
 @router.post("/{brand_id}/reset-api-key")
