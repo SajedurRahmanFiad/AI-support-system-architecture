@@ -17,6 +17,8 @@ PROVIDER_LABELS = {
     "mock": "Mock",
 }
 
+SUPPORTED_MODALITIES = {"text", "image", "audio"}
+
 
 @dataclass
 class LLMRuntimeConfig:
@@ -125,15 +127,48 @@ def extract_brand_llm_settings(brand: models.Brand | None) -> dict[str, Any]:
     return llm if isinstance(llm, dict) else {}
 
 
+def extract_brand_processing_settings(brand: models.Brand | None, modality: str = "text") -> dict[str, Any]:
+    normalized_modality = (modality or "text").strip().lower()
+    if normalized_modality not in SUPPORTED_MODALITIES:
+        normalized_modality = "text"
+    if brand is None or not isinstance(brand.settings_json, dict):
+        return {}
+    processing = brand.settings_json.get("processing")
+    if isinstance(processing, dict):
+        modality_settings = processing.get(normalized_modality)
+        if isinstance(modality_settings, dict):
+            return modality_settings
+    if normalized_modality == "text":
+        return extract_brand_llm_settings(brand)
+    return {}
+
+
+def extract_brand_billing_settings(brand: models.Brand | None) -> dict[str, Any]:
+    if brand is None or not isinstance(brand.settings_json, dict):
+        return {}
+    billing = brand.settings_json.get("billing")
+    return billing if isinstance(billing, dict) else {}
+
+
 def resolve_llm_runtime_config(
     brand: models.Brand | None = None,
     settings: Settings | None = None,
     *,
     preferred_provider: str | None = None,
+    modality: str = "text",
 ) -> LLMRuntimeConfig:
     settings = settings or get_settings()
-    brand_settings = extract_brand_llm_settings(brand)
-    provider = normalize_provider_name(brand_settings.get("provider") or preferred_provider or settings.llm_provider)
+    normalized_modality = (modality or "text").strip().lower()
+    brand_settings = extract_brand_processing_settings(brand, normalized_modality)
+
+    fallback_provider = preferred_provider or settings.llm_provider
+    if normalized_modality in {"image", "audio"} and not brand_settings:
+        if settings.gemini_api_key:
+            fallback_provider = "gemini"
+        else:
+            fallback_provider = preferred_provider or settings.llm_provider
+
+    provider = normalize_provider_name(brand_settings.get("provider") or fallback_provider)
     model = _strip_or_none(brand_settings.get("model")) or default_model_for_provider(provider, settings)
     api_key = _strip_or_none(brand_settings.get("api_key")) or default_api_key_for_provider(provider, settings)
     summary_model = _strip_or_none(brand_settings.get("summary_model")) or default_summary_model_for_provider(provider, settings) or model
@@ -194,13 +229,80 @@ def merge_brand_llm_settings(
     return settings_json
 
 
+def merge_brand_processing_settings(
+    current_settings: dict[str, Any] | None,
+    modality: str,
+    llm_settings: dict[str, Any] | None,
+) -> dict[str, Any]:
+    settings_json = dict(current_settings or {})
+    normalized_modality = (modality or "text").strip().lower()
+    if normalized_modality not in SUPPORTED_MODALITIES or llm_settings is None:
+        return settings_json
+
+    processing = dict(settings_json.get("processing") or {})
+    normalized = {
+        "provider": normalize_provider_name(llm_settings.get("provider")),
+        "model": _strip_or_none(llm_settings.get("model")),
+        "api_key": _strip_or_none(llm_settings.get("api_key")),
+        "summary_model": _strip_or_none(llm_settings.get("summary_model")),
+        "embedding_model": _strip_or_none(llm_settings.get("embedding_model")),
+        "temperature": _safe_float(llm_settings.get("temperature")),
+        "top_p": _safe_float(llm_settings.get("top_p")),
+        "top_k": _safe_int(llm_settings.get("top_k")),
+        "max_output_tokens": _safe_int(llm_settings.get("max_output_tokens")),
+        "site_url": _strip_or_none(llm_settings.get("site_url")),
+        "app_name": _strip_or_none(llm_settings.get("app_name")),
+    }
+    processing[normalized_modality] = {key: value for key, value in normalized.items() if value not in (None, "", [])}
+    settings_json["processing"] = processing
+    if normalized_modality == "text":
+        settings_json["llm"] = dict(processing[normalized_modality])
+    return settings_json
+
+
+def merge_brand_billing_settings(
+    current_settings: dict[str, Any] | None,
+    billing_settings: dict[str, Any] | None,
+) -> dict[str, Any]:
+    settings_json = dict(current_settings or {})
+    if billing_settings is None:
+        return settings_json
+
+    billing = dict(settings_json.get("billing") or {})
+    text = dict(billing.get("text") or {})
+    image = dict(billing.get("image") or {})
+    audio = dict(billing.get("audio") or {})
+
+    if "per_message_cost_bdt" in billing_settings:
+        text["per_message_cost_bdt"] = _safe_float(billing_settings.get("per_message_cost_bdt"), default=0.0) or 0.0
+    if "text_input_cost_per_million_bdt" in billing_settings:
+        text["input_cost_per_million_bdt"] = _safe_float(billing_settings.get("text_input_cost_per_million_bdt"), default=0.0) or 0.0
+    if "text_output_cost_per_million_bdt" in billing_settings:
+        text["output_cost_per_million_bdt"] = _safe_float(billing_settings.get("text_output_cost_per_million_bdt"), default=0.0) or 0.0
+    if "image_input_cost_per_million_bdt" in billing_settings:
+        image["input_cost_per_million_bdt"] = _safe_float(billing_settings.get("image_input_cost_per_million_bdt"), default=0.0) or 0.0
+    if "image_output_cost_per_million_bdt" in billing_settings:
+        image["output_cost_per_million_bdt"] = _safe_float(billing_settings.get("image_output_cost_per_million_bdt"), default=0.0) or 0.0
+    if "audio_input_cost_per_million_bdt" in billing_settings:
+        audio["input_cost_per_million_bdt"] = _safe_float(billing_settings.get("audio_input_cost_per_million_bdt"), default=0.0) or 0.0
+    if "audio_output_cost_per_million_bdt" in billing_settings:
+        audio["output_cost_per_million_bdt"] = _safe_float(billing_settings.get("audio_output_cost_per_million_bdt"), default=0.0) or 0.0
+
+    billing["text"] = text
+    billing["image"] = image
+    billing["audio"] = audio
+    settings_json["billing"] = billing
+    return settings_json
+
+
 def serialize_brand_llm_settings(
     brand: models.Brand | None,
     *,
     include_secret: bool = False,
     settings: Settings | None = None,
+    modality: str = "text",
 ) -> dict[str, Any]:
-    runtime = resolve_llm_runtime_config(brand, settings=settings)
+    runtime = resolve_llm_runtime_config(brand, settings=settings, modality=modality)
     return {
         "provider": runtime.provider,
         "provider_label": provider_label(runtime.provider),
@@ -216,6 +318,22 @@ def serialize_brand_llm_settings(
         "max_output_tokens": runtime.max_output_tokens,
         "site_url": runtime.site_url,
         "app_name": runtime.app_name,
+    }
+
+
+def serialize_brand_billing_settings(brand: models.Brand | None) -> dict[str, float]:
+    billing = extract_brand_billing_settings(brand)
+    text = billing.get("text") if isinstance(billing.get("text"), dict) else {}
+    image = billing.get("image") if isinstance(billing.get("image"), dict) else {}
+    audio = billing.get("audio") if isinstance(billing.get("audio"), dict) else {}
+    return {
+        "per_message_cost_bdt": float(text.get("per_message_cost_bdt") or 0.0),
+        "text_input_cost_per_million_bdt": float(text.get("input_cost_per_million_bdt") or 0.0),
+        "text_output_cost_per_million_bdt": float(text.get("output_cost_per_million_bdt") or 0.0),
+        "image_input_cost_per_million_bdt": float(image.get("input_cost_per_million_bdt") or 0.0),
+        "image_output_cost_per_million_bdt": float(image.get("output_cost_per_million_bdt") or 0.0),
+        "audio_input_cost_per_million_bdt": float(audio.get("input_cost_per_million_bdt") or 0.0),
+        "audio_output_cost_per_million_bdt": float(audio.get("output_cost_per_million_bdt") or 0.0),
     }
 
 

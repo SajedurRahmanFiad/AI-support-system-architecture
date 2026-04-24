@@ -1,10 +1,12 @@
 from fastapi import APIRouter
 
 from app.api.routes import (
+    app_settings,
     audit_logs,
     bootstrap,
     brand_prompt_config,
     brands,
+    cash_flow,
     conversations,
     customers,
     facebook_webhook,
@@ -22,7 +24,9 @@ from app.api.routes import (
 api_router = APIRouter()
 api_router.include_router(bootstrap.router, tags=["bootstrap"])
 api_router.include_router(health.router, tags=["health"])
+api_router.include_router(app_settings.router, tags=["app-settings"])
 api_router.include_router(audit_logs.router, tags=["audit-logs"])
+api_router.include_router(cash_flow.router, tags=["cash-flow"])
 api_router.include_router(dashboard.router, tags=["dashboard"])
 api_router.include_router(brand_prompt_config.router, tags=["brand-prompt-config"])
 api_router.include_router(brands.router, tags=["brands"])

@@ -8,7 +8,7 @@ from app.config import get_settings
 from app.services.llm.base import BrandContext, ConversationTurn, CustomerSnapshot, LLMProvider
 
 
-def build_brand_context(brand: models.Brand) -> BrandContext:
+def build_brand_context(brand: models.Brand, *, system_prompt: str | None = None) -> BrandContext:
     rules = [
         {
             "category": item.category,
@@ -37,6 +37,7 @@ def build_brand_context(brand: models.Brand) -> BrandContext:
         tone_instructions=brand.tone_instructions,
         fallback_handoff_message=brand.fallback_handoff_message,
         public_reply_guidelines=brand.public_reply_guidelines,
+        system_prompt=system_prompt,
         rules=rules,
         style_examples=style_examples,
     )

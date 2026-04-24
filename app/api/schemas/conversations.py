@@ -59,6 +59,7 @@ class ConversationOut(BaseModel):
     owner_name: str | None
     short_summary: str | None
     metadata_json: dict[str, Any] | None
+    customer_display_name: str | None = None
     last_message_at: datetime | None
     created_at: datetime
     updated_at: datetime
@@ -78,6 +79,7 @@ class ConversationSummaryOut(BaseModel):
     owner_name: str | None
     short_summary: str | None
     metadata_json: dict[str, Any] | None
+    customer_display_name: str | None = None
     last_message_at: datetime | None
     created_at: datetime
     updated_at: datetime

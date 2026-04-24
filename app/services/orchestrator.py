@@ -10,6 +10,8 @@ from app import models
 from app.api.schemas.messages import MessageProcessRequest, MessageProcessResponse
 from app.config import get_settings
 from app.services import knowledge, memory, moderation
+from app.services.app_settings import get_main_system_prompt
+from app.services.billing import record_usage
 from app.services.brand_service import get_brand_or_404
 from app.services.llm.base import AttachmentInsight
 from app.services.llm.factory import build_llm_provider
@@ -22,11 +24,14 @@ class MessageProcessor:
         self.db = db
         self.settings = get_settings()
         self.provider = build_llm_provider()
+        self.attachment_provider = build_llm_provider(modality="image")
         self.speech_provider = build_speech_provider()
 
     def process(self, payload: MessageProcessRequest) -> MessageProcessResponse:
         brand = get_brand_or_404(self.db, payload.brand_id)
-        self.provider = build_llm_provider(brand)
+        self.provider = build_llm_provider(brand, modality="text")
+        self.attachment_provider = build_llm_provider(brand, modality="image")
+        self.speech_provider = build_speech_provider(brand)
         if not brand.active:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Brand is inactive.")
 
@@ -82,6 +87,13 @@ class MessageProcessor:
             attachments=attachments,
             preferred_language=customer.language or brand.default_language,
         )
+        self._record_attachment_usage(
+            brand=brand,
+            conversation_id=conversation.id,
+            message_id=inbound_message.id,
+            channel=payload.channel,
+            attachment_insights=attachment_insights,
+        )
         inferred_language = next(
             (item.detected_language for item in attachment_insights if item.detected_language),
             None,
@@ -98,12 +110,18 @@ class MessageProcessor:
                 AttachmentInsight(
                     attachment_id=product_match.get("product_image_id", 0),
                     attachment_type="product_match",
-                    summary=(
-                        f"Recognized product match: {product_match['product_name']} "
-                        f"(category: {product_match.get('category', 'general')}, "
-                        f"confidence: {product_match.get('confidence', 0.0):.2f})."
-                    ),
+                    summary=self._build_product_fact_summary(product_match),
                     extracted_text=product_match.get("visual_summary"),
+                )
+            )
+
+        for candidate in self._search_products_by_text(brand.id, payload.text):
+            attachment_insights.append(
+                AttachmentInsight(
+                    attachment_id=int(candidate.get("primary_image_id") or 0),
+                    attachment_type="product_catalog",
+                    summary=self._build_product_fact_summary(candidate),
+                    extracted_text=str((candidate.get("metadata") or {}).get("description") or "") or None,
                 )
             )
 
@@ -112,9 +130,13 @@ class MessageProcessor:
             .options(joinedload(models.Brand.rules), joinedload(models.Brand.style_examples))
             .where(models.Brand.id == brand.id)
         ) or brand
-        brand_context = memory.build_brand_context(hydrated_brand)
+        brand_context = memory.build_brand_context(
+            hydrated_brand,
+            system_prompt=get_main_system_prompt(self.db),
+        )
         history = memory.fetch_recent_history(self.db, conversation.id)[:-1]
         customer_snapshot = memory.build_customer_snapshot(customer)
+        ad_id = self._extract_ad_id(payload.metadata) or self._extract_ad_id(conversation.metadata_json or {})
 
         moderation_text = " ".join(
             [payload.text]
@@ -171,6 +193,23 @@ class MessageProcessor:
             )
             self.db.add(outbound_message)
             self.db.flush()
+            record_usage(
+                self.db,
+                brand=brand,
+                channel=payload.channel,
+                usage_type="text",
+                provider=self.speech_provider.provider_name,
+                model=getattr(self.speech_provider, "runtime", None).model if getattr(self.speech_provider, "runtime", None) else getattr(unclear_audio, "model_name", None),
+                token_usage=token_usage,
+                message_units=1,
+                conversation_id=conversation.id,
+                message_id=outbound_message.id,
+                metadata={
+                    "status": decision_status,
+                    "handoff_reason": handoff_reason,
+                    "kind": "clarification_reply",
+                },
+            )
             memory.apply_customer_updates(self.db, customer, customer_updates)
             audit = models.AuditLog(
                 brand_id=brand.id,
@@ -208,6 +247,7 @@ class MessageProcessor:
             self.provider,
             brand.id,
             moderation_text or payload.text,
+            ad_id=ad_id,
         )
 
         # If product was recognized, enhance search with product name
@@ -221,6 +261,7 @@ class MessageProcessor:
                 self.provider,
                 brand.id,
                 f"{product_name} {alias_text} {payload.text}".strip(),
+                ad_id=ad_id,
             )
             # Combine and deduplicate knowledge hits
             all_hits = knowledge_hits + product_knowledge
@@ -368,6 +409,22 @@ class MessageProcessor:
         )
         self.db.add(outbound_message)
         self.db.flush()
+        record_usage(
+            self.db,
+            brand=brand,
+            channel=payload.channel,
+            usage_type="text",
+            provider=self.provider.provider_name,
+            model=getattr(getattr(self.provider, "runtime", None), "model", None),
+            token_usage=token_usage,
+            message_units=1,
+            conversation_id=conversation.id,
+            message_id=outbound_message.id,
+            metadata={
+                "status": decision_status,
+                "handoff_reason": handoff_reason,
+            },
+        )
 
         memory.apply_customer_updates(self.db, customer, customer_updates)
         memory.maybe_refresh_summary(self.db, self.provider, brand_context, customer, conversation)
@@ -412,7 +469,7 @@ class MessageProcessor:
             )
         )
         if customer:
-            if payload.customer_name and not customer.display_name:
+            if payload.customer_name and payload.customer_name != customer.display_name:
                 customer.display_name = payload.customer_name
             if payload.customer_language and not customer.language:
                 customer.language = payload.customer_language
@@ -439,6 +496,11 @@ class MessageProcessor:
             )
         )
         if conversation:
+            merged_metadata = dict(conversation.metadata_json or {})
+            merged_metadata.update(payload.metadata)
+            conversation.metadata_json = merged_metadata
+            self.db.add(conversation)
+            self.db.flush()
             return conversation
         conversation = models.Conversation(
             brand_id=brand_id,
@@ -566,6 +628,9 @@ class MessageProcessor:
                     metadata["needs_clarification"] = transcribed.needs_clarification
                     metadata["clarification_reason"] = transcribed.clarification_reason
                     metadata["speech_provider"] = transcribed.provider_name
+                    metadata["provider_name"] = transcribed.provider_name
+                    metadata["model_name"] = transcribed.model_name
+                    metadata["token_usage"] = transcribed.token_usage or {}
                     attachment.metadata_json = metadata
                     self.db.add(attachment)
                     insight = AttachmentInsight(
@@ -579,9 +644,12 @@ class MessageProcessor:
                         analysis_confidence=transcribed.confidence,
                         needs_clarification=transcribed.needs_clarification,
                         clarification_reason=transcribed.clarification_reason,
+                        provider_name=transcribed.provider_name,
+                        model_name=transcribed.model_name,
+                        token_usage=transcribed.token_usage or {},
                     )
                 else:
-                    analyzed = self.provider.analyze_attachment(
+                    analyzed = self.attachment_provider.analyze_attachment(
                         attachment_type=attachment.attachment_type,
                         mime_type=attachment.mime_type,
                         data=file_bytes,
@@ -593,6 +661,9 @@ class MessageProcessor:
                     attachment.analysis_confidence = analyzed.analysis_confidence
                     metadata = attachment.metadata_json or {}
                     metadata["summary"] = analyzed.summary
+                    metadata["provider_name"] = analyzed.provider_name
+                    metadata["model_name"] = analyzed.model_name
+                    metadata["token_usage"] = analyzed.token_usage
                     attachment.metadata_json = metadata
                     self.db.add(attachment)
                     insight = analyzed
@@ -608,6 +679,9 @@ class MessageProcessor:
                     analysis_confidence=attachment.analysis_confidence,
                     needs_clarification=bool((attachment.metadata_json or {}).get("needs_clarification", False)),
                     clarification_reason=(attachment.metadata_json or {}).get("clarification_reason"),
+                    provider_name=(attachment.metadata_json or {}).get("provider_name"),
+                    model_name=(attachment.metadata_json or {}).get("model_name"),
+                    token_usage=(attachment.metadata_json or {}).get("token_usage") or {},
                 )
             insight.attachment_id = attachment.id
             insights.append(insight)
@@ -640,6 +714,86 @@ class MessageProcessor:
                     continue
 
         return None
+
+    def _search_products_by_text(self, brand_id: int, customer_text: str) -> list[dict]:
+        cleaned = " ".join((customer_text or "").split()).strip()
+        if not cleaned:
+            return []
+        from app.services.product_recognition import ProductRecognizer
+
+        recognizer = ProductRecognizer(self.db, brand_id)
+        return recognizer.search_products_by_text(cleaned, limit=3)
+
+    def _build_product_fact_summary(self, product_match: dict) -> str:
+        metadata = product_match.get("metadata") or {}
+        stock_value = metadata.get("in_stock")
+        if isinstance(stock_value, bool):
+            stock_text = "In stock" if stock_value else "Out of stock"
+        elif stock_value in {"1", "true", "yes", 1}:
+            stock_text = "In stock"
+        elif stock_value in {"0", "false", "no", 0}:
+            stock_text = "Out of stock"
+        else:
+            stock_text = "Stock status not set"
+
+        sale_price = metadata.get("sale_price")
+        price_text = f"Sale price: {sale_price} BDT." if sale_price not in (None, "", []) else "Sale price not set."
+        description = str(metadata.get("description") or "").strip()
+        confidence = product_match.get("confidence")
+        confidence_text = f" Match confidence: {float(confidence):.2f}." if confidence is not None else ""
+        return (
+            f"Product: {product_match.get('product_name', 'Unknown product')} "
+            f"(category: {product_match.get('category', 'general')}). "
+            f"{stock_text}. {price_text}"
+            f"{' Description: ' + description + '.' if description else ''}"
+            f"{confidence_text}"
+        ).strip()
+
+    def _extract_ad_id(self, metadata: dict | None) -> str | None:
+        payload = metadata if isinstance(metadata, dict) else {}
+        candidates = [
+            payload.get("ad_id"),
+            ((payload.get("message") or {}) if isinstance(payload.get("message"), dict) else {}).get("ad_id"),
+            ((payload.get("referral") or {}) if isinstance(payload.get("referral"), dict) else {}).get("ad_id"),
+            ((((payload.get("referral") or {}) if isinstance(payload.get("referral"), dict) else {}).get("ads_context_data") or {}) if isinstance(((payload.get("referral") or {}) if isinstance(payload.get("referral"), dict) else {}).get("ads_context_data"), dict) else {}).get("ad_id"),
+        ]
+        for candidate in candidates:
+            cleaned = str(candidate or "").strip()
+            if cleaned:
+                return cleaned
+        return None
+
+    def _record_attachment_usage(
+        self,
+        *,
+        brand: models.Brand,
+        conversation_id: int,
+        message_id: int,
+        channel: str,
+        attachment_insights: list[AttachmentInsight],
+    ) -> None:
+        for insight in attachment_insights:
+            if insight.attachment_type not in {"audio", "image"}:
+                continue
+            token_usage = insight.token_usage or {}
+            if not token_usage:
+                continue
+            record_usage(
+                self.db,
+                brand=brand,
+                channel=channel,
+                usage_type=insight.attachment_type,
+                provider=insight.provider_name,
+                model=insight.model_name,
+                token_usage=token_usage,
+                message_units=0,
+                conversation_id=conversation_id,
+                message_id=message_id,
+                metadata={
+                    "attachment_id": insight.attachment_id,
+                    "needs_clarification": insight.needs_clarification,
+                },
+            )
 
     def _find_unclear_audio_insight(self, attachment_insights: list[AttachmentInsight]) -> AttachmentInsight | None:
         for item in attachment_insights:

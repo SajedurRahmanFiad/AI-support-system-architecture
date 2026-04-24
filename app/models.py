@@ -66,6 +66,8 @@ class Brand(Base, TimestampMixin):
     conversations: Mapped[list[Conversation]] = relationship(back_populates="brand", cascade="all, delete-orphan")
     product_images: Mapped[list[ProductImage]] = relationship(back_populates="brand", cascade="all, delete-orphan")
     facebook_pages: Mapped[list[FacebookPageAutomation]] = relationship(back_populates="brand", cascade="all, delete-orphan")
+    payments: Mapped[list[BrandPayment]] = relationship(back_populates="brand", cascade="all, delete-orphan")
+    usage_records: Mapped[list[UsageRecord]] = relationship(back_populates="brand", cascade="all, delete-orphan")
 
 
 class BrandRule(Base, TimestampMixin):
@@ -311,3 +313,46 @@ class FacebookPageAutomation(Base, TimestampMixin):
     notes: Mapped[str | None] = mapped_column(Text, default=None)
 
     brand: Mapped[Brand] = relationship(back_populates="facebook_pages")
+
+
+class AppSetting(Base, TimestampMixin):
+    __tablename__ = "app_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    setting_key: Mapped[str] = mapped_column(String(120), unique=True, index=True)
+    value_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
+
+
+class UsageRecord(Base, TimestampMixin):
+    __tablename__ = "usage_records"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    conversation_id: Mapped[int | None] = mapped_column(ForeignKey("conversations.id", ondelete="SET NULL"), index=True)
+    message_id: Mapped[int | None] = mapped_column(ForeignKey("messages.id", ondelete="SET NULL"), index=True)
+    channel: Mapped[str] = mapped_column(String(64), default="api", index=True)
+    usage_type: Mapped[str] = mapped_column(String(40), default="text", index=True)
+    provider: Mapped[str | None] = mapped_column(String(64), default=None)
+    model: Mapped[str | None] = mapped_column(String(255), default=None)
+    message_units: Mapped[int] = mapped_column(Integer, default=0)
+    input_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    billed_amount_bdt: Mapped[float] = mapped_column(Float, default=0.0)
+    actual_cost_bdt: Mapped[float] = mapped_column(Float, default=0.0)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+
+    brand: Mapped[Brand] = relationship(back_populates="usage_records")
+
+
+class BrandPayment(Base, TimestampMixin):
+    __tablename__ = "brand_payments"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    brand_id: Mapped[int] = mapped_column(ForeignKey("brands.id", ondelete="CASCADE"), index=True)
+    amount_bdt: Mapped[float] = mapped_column(Float, default=0.0)
+    paid_on: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), nullable=False, index=True)
+    notes: Mapped[str | None] = mapped_column(Text, default=None)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
+
+    brand: Mapped[Brand] = relationship(back_populates="payments")

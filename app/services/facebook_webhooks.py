@@ -22,6 +22,9 @@ class FacebookMessengerDeliveryError(RuntimeError):
     """Raised when the Meta Messenger Send API rejects or fails a reply."""
 
 
+PENDING_REVIEW_LABEL_NAME = "Pending Review"
+
+
 class FacebookMessengerClient:
     graph_api_base_url = "https://graph.facebook.com/v25.0"
 
@@ -66,6 +69,112 @@ class FacebookMessengerClient:
             raise FacebookMessengerDeliveryError("Facebook Send API returned an invalid JSON response.")
 
         return payload
+
+    def get_user_profile(self, recipient_id: str) -> dict[str, Any] | None:
+        cleaned_recipient_id = recipient_id.strip()
+        if not self.page_access_token or not cleaned_recipient_id:
+            return None
+        try:
+            response = httpx.get(
+                f"{self.graph_api_base_url}/{cleaned_recipient_id}",
+                params={
+                    "access_token": self.page_access_token,
+                    "fields": "name,first_name,last_name,profile_pic",
+                },
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 400:
+            return None
+        try:
+            payload = response.json()
+        except Exception:  # noqa: BLE001
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def ensure_custom_label(self, page_id: str, label_name: str) -> str | None:
+        normalized_name = label_name.strip()
+        if not self.page_access_token or not page_id.strip() or not normalized_name:
+            return None
+
+        existing = self.list_custom_labels(page_id)
+        for item in existing:
+            if str(item.get("name") or "").strip().lower() == normalized_name.lower():
+                label_id = str(item.get("id") or "").strip()
+                if label_id:
+                    return label_id
+
+        try:
+            response = httpx.post(
+                f"{self.graph_api_base_url}/{page_id}/custom_labels",
+                params={"access_token": self.page_access_token},
+                data={"name": normalized_name},
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code >= 400:
+            return None
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+        if not isinstance(payload, dict):
+            return None
+        return str(payload.get("id") or "").strip() or None
+
+    def list_custom_labels(self, page_id: str) -> list[dict[str, Any]]:
+        if not self.page_access_token or not page_id.strip():
+            return []
+        try:
+            response = httpx.get(
+                f"{self.graph_api_base_url}/{page_id}/custom_labels",
+                params={"access_token": self.page_access_token},
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError:
+            return []
+        if response.status_code >= 400:
+            return []
+        try:
+            payload = response.json()
+        except ValueError:
+            return []
+        data = payload.get("data") if isinstance(payload, dict) else None
+        return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
+
+    def associate_label(self, recipient_id: str, label_id: str) -> bool:
+        if not self.page_access_token or not recipient_id.strip() or not label_id.strip():
+            return False
+        try:
+            response = httpx.post(
+                f"{self.graph_api_base_url}/{recipient_id}/custom_labels",
+                params={
+                    "access_token": self.page_access_token,
+                    "custom_label_id": label_id,
+                },
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 400
+
+    def remove_label(self, recipient_id: str, label_id: str) -> bool:
+        if not self.page_access_token or not recipient_id.strip() or not label_id.strip():
+            return False
+        try:
+            response = httpx.delete(
+                f"{self.graph_api_base_url}/{recipient_id}/custom_labels",
+                params={
+                    "access_token": self.page_access_token,
+                    "custom_label_id": label_id,
+                },
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 400
 
     @staticmethod
     def _extract_error_detail(payload: Any) -> str | None:
@@ -224,6 +333,8 @@ class FacebookWebhookService:
         if sender_id == page.page_id:
             return "ignored", f"Ignored self-authored Messenger event for page {page.page_id}."
 
+        referral = self._extract_referral_metadata(event)
+
         external_message_id = (
             self._clean_text(((event.get("message") or {}) if isinstance(event.get("message"), dict) else {}).get("mid"))
             or self._clean_text(((event.get("postback") or {}) if isinstance(event.get("postback"), dict) else {}).get("mid"))
@@ -243,6 +354,7 @@ class FacebookWebhookService:
             event,
             capture_attachments=not skip_attachment_capture,
         )
+        customer_name = self._resolve_customer_name(page, sender_id) if text else None
         if not text and not attachment_ids:
             return "ignored", f"Ignored Messenger event for page {page.page_id} because it had no text or supported fallback content."
 
@@ -255,12 +367,15 @@ class FacebookWebhookService:
             brand_id=page.brand_id,
             channel="facebook_messenger",
             customer_external_id=sender_id,
+            customer_name=customer_name,
             customer_language=page.default_language,
             conversation_external_id=f"facebook:{page.page_id}:{sender_id}",
             external_message_id=external_message_id,
             text=text,
             attachment_ids=attachment_ids,
             metadata={
+                "ad_id": referral.get("ad_id"),
+                "referral": referral,
                 "source_platform": "facebook",
                 "event_type": "messaging",
                 "page_id": page.page_id,
@@ -359,6 +474,10 @@ class FacebookWebhookService:
         if isinstance(message, dict):
             message_text = self._clean_text(message.get("text"))
             metadata["message_mid"] = self._clean_text(message.get("mid"))
+            referral = self._extract_referral_metadata(message)
+            if referral:
+                metadata["referral"] = referral
+                metadata["ad_id"] = referral.get("ad_id")
             attachments = message.get("attachments") if isinstance(message.get("attachments"), list) else []
             if attachments:
                 metadata["attachments"] = attachments
@@ -388,6 +507,10 @@ class FacebookWebhookService:
             metadata["postback_mid"] = self._clean_text(postback.get("mid"))
             metadata["postback_title"] = self._clean_text(postback.get("title"))
             metadata["postback_payload"] = self._clean_text(postback.get("payload"))
+            referral = self._extract_referral_metadata(postback)
+            if referral:
+                metadata["referral"] = referral
+                metadata["ad_id"] = referral.get("ad_id")
             text = metadata["postback_title"] or metadata["postback_payload"] or "[Facebook postback received]"
             return text, metadata, attachment_ids
 
@@ -510,6 +633,48 @@ class FacebookWebhookService:
         }
         return mapping.get(mime_type, ".bin")
 
+    def _resolve_customer_name(self, page: models.FacebookPageAutomation, sender_id: str) -> str | None:
+        existing_customer = self.db.scalar(
+            select(models.Customer.display_name).where(
+                models.Customer.brand_id == page.brand_id,
+                models.Customer.external_id == sender_id,
+            )
+        )
+        cached_name = self._clean_text(existing_customer)
+        if cached_name:
+            return cached_name
+
+        profile = FacebookMessengerClient(page.page_access_token).get_user_profile(sender_id)
+        if not isinstance(profile, dict):
+            return None
+        return (
+            self._clean_text(profile.get("name"))
+            or " ".join(
+                part for part in [
+                    self._clean_text(profile.get("first_name")),
+                    self._clean_text(profile.get("last_name")),
+                ] if part
+            ).strip()
+            or None
+        )
+
+    def _extract_referral_metadata(self, source: Any) -> dict[str, Any]:
+        payload = source if isinstance(source, dict) else {}
+        referral = payload.get("referral") if isinstance(payload.get("referral"), dict) else {}
+        ads_context = referral.get("ads_context_data") if isinstance(referral.get("ads_context_data"), dict) else {}
+        result = {
+            "ref": self._clean_text(referral.get("ref")),
+            "source": self._clean_text(referral.get("source")),
+            "type": self._clean_text(referral.get("type")),
+            "ad_id": self._clean_text(referral.get("ad_id")) or self._clean_text(ads_context.get("ad_id")),
+            "post_id": self._clean_text(referral.get("post_id")) or self._clean_text(ads_context.get("post_id")),
+            "ad_title": self._clean_text(ads_context.get("ad_title")),
+            "photo_url": self._clean_text(ads_context.get("photo_url")),
+            "video_url": self._clean_text(ads_context.get("video_url")),
+            "referer_uri": self._clean_text(referral.get("referer_uri")),
+        }
+        return {key: value for key, value in result.items() if value}
+
     def _deliver_messenger_reply(
         self,
         *,
@@ -631,3 +796,37 @@ class FacebookWebhookService:
     def _clean_text(value: Any) -> str | None:
         normalized = str(value or "").strip()
         return normalized or None
+
+
+def sync_pending_review_label(db: Session, conversation: models.Conversation, enabled: bool) -> bool:
+    if conversation.channel != "facebook_messenger":
+        return False
+    metadata = conversation.metadata_json if isinstance(conversation.metadata_json, dict) else {}
+    page_id = str(metadata.get("page_id") or "").strip()
+    sender_id = str(metadata.get("sender_id") or "").strip()
+    if not page_id or not sender_id:
+        return False
+
+    page = db.scalar(select(models.FacebookPageAutomation).where(models.FacebookPageAutomation.page_id == page_id))
+    if page is None or not page.page_access_token:
+        return False
+
+    client = FacebookMessengerClient(page.page_access_token)
+    label_id = client.ensure_custom_label(page.page_id, PENDING_REVIEW_LABEL_NAME)
+    if not label_id:
+        return False
+
+    changed = client.associate_label(sender_id, label_id) if enabled else client.remove_label(sender_id, label_id)
+    if changed:
+        next_metadata = dict(metadata)
+        label_state = dict(next_metadata.get("labels") or {})
+        if enabled:
+            label_state["pending_review"] = label_id
+        else:
+            label_state.pop("pending_review", None)
+        next_metadata["labels"] = label_state
+        conversation.metadata_json = next_metadata
+        db.add(conversation)
+        db.commit()
+        db.refresh(conversation)
+    return changed

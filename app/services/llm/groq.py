@@ -91,6 +91,8 @@ class GroqLLMProvider(LLMProvider):
             summary=self._fallback_attachment_summary(attachment_type, mime_type, data),
             transcript=None,
             extracted_text=None,
+            provider_name=self.provider_name,
+            model_name=self.runtime.model,
         )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
@@ -149,7 +151,8 @@ class GroqLLMProvider(LLMProvider):
             ensure_ascii=True,
         )
         return (
-            "You are generating a reply for a sales and customer support API. "
+            f"Main system prompt:\n{brand.system_prompt or 'Use grounded, helpful sales and support behavior.'}\n\n"
+            "Operational contract: "
             "Be accurate, concise, and human. Never invent business facts. "
             "If the message is risky, unclear, legal, refund-related, abusive, or needs approval, choose handoff. "
             "If you need one short follow-up question, choose clarify. "

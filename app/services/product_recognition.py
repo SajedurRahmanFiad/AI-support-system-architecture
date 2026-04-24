@@ -19,7 +19,7 @@ class ProductRecognizer:
     def __init__(self, db: Session, brand_id: int) -> None:
         self.db = db
         self.brand_id = brand_id
-        self.provider = build_llm_provider(get_brand_or_404(db, brand_id))
+        self.provider = build_llm_provider(get_brand_or_404(db, brand_id), modality="image")
 
     def add_product_image(
         self,
@@ -231,6 +231,33 @@ class ProductRecognizer:
             key=lambda item: item.get("updated_at") or item.get("created_at") or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,
         )
+
+    def search_products_by_text(self, query: str, limit: int = 3) -> list[dict[str, Any]]:
+        cleaned_query = " ".join((query or "").split()).strip()
+        if not cleaned_query:
+            return []
+
+        scored: list[dict[str, Any]] = []
+        for product in self.get_product_groups():
+            metadata = product.get("metadata") or {}
+            text = self._build_reference_fingerprint(
+                product_name=product["product_name"],
+                category=product["category"],
+                summary=str(metadata.get("visual_summary") or ""),
+                extracted_text=str(metadata.get("visible_text") or "") or None,
+                metadata=metadata,
+            )
+            score = self._lexical_score(cleaned_query, text)
+            if score <= 0:
+                continue
+            scored.append(
+                {
+                    **product,
+                    "score": score,
+                }
+            )
+        scored.sort(key=lambda item: item["score"], reverse=True)
+        return scored[:limit]
 
     def delete_product_image(self, product_image_id: int) -> bool:
         product_img = self.db.get(models.ProductImage, product_image_id)

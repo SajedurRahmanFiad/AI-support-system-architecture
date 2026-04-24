@@ -373,6 +373,7 @@ def search_knowledge(
     brand_id: int,
     query: str,
     top_k: int | None = None,
+    ad_id: str | None = None,
 ) -> list[KnowledgeSnippet]:
     settings = get_settings()
     top_k = top_k or settings.knowledge_top_k
@@ -399,6 +400,10 @@ def search_knowledge(
         lexical = lexical_score(query, chunk.content)
         semantic = cosine_similarity(query_embedding, chunk.embedding_json) if query_embedding and chunk.embedding_json else 0.0
         score = (lexical * 0.55) + (semantic * 0.45 if query_embedding and chunk.embedding_json else 0.0)
+        document_metadata = chunk.document.metadata_json if isinstance(chunk.document.metadata_json, dict) else {}
+        document_ad_id = str(document_metadata.get("ad_id") or chunk.document.source_reference or "").strip()
+        if ad_id and document_ad_id and document_ad_id == str(ad_id).strip():
+            score += 0.35
         if score <= 0:
             continue
         scored.append(

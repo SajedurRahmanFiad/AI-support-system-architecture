@@ -5,7 +5,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from app.services.llm.runtime import merge_brand_llm_settings, serialize_brand_llm_settings
+from app.services.llm.runtime import (
+    merge_brand_billing_settings,
+    merge_brand_llm_settings,
+    merge_brand_processing_settings,
+    serialize_brand_billing_settings,
+    serialize_brand_llm_settings,
+)
 
 
 class BrandLLMSettingsInput(BaseModel):
@@ -77,6 +83,26 @@ class BrandLLMSettingsOut(BaseModel):
     app_name: str | None = None
 
 
+class BrandBillingSettingsInput(BaseModel):
+    per_message_cost_bdt: float | None = None
+    text_input_cost_per_million_bdt: float | None = None
+    text_output_cost_per_million_bdt: float | None = None
+    image_input_cost_per_million_bdt: float | None = None
+    image_output_cost_per_million_bdt: float | None = None
+    audio_input_cost_per_million_bdt: float | None = None
+    audio_output_cost_per_million_bdt: float | None = None
+
+
+class BrandBillingSettingsOut(BaseModel):
+    per_message_cost_bdt: float = 0.0
+    text_input_cost_per_million_bdt: float = 0.0
+    text_output_cost_per_million_bdt: float = 0.0
+    image_input_cost_per_million_bdt: float = 0.0
+    image_output_cost_per_million_bdt: float = 0.0
+    audio_input_cost_per_million_bdt: float = 0.0
+    audio_output_cost_per_million_bdt: float = 0.0
+
+
 class BrandCreate(BaseModel):
     name: str
     slug: str
@@ -88,6 +114,10 @@ class BrandCreate(BaseModel):
     public_reply_guidelines: str | None = None
     settings: dict[str, Any] = Field(default_factory=dict)
     llm_settings: BrandLLMSettingsInput | None = None
+    text_processing: BrandLLMSettingsInput | None = None
+    image_processing: BrandLLMSettingsInput | None = None
+    audio_processing: BrandLLMSettingsInput | None = None
+    billing_settings: BrandBillingSettingsInput | None = None
 
 
 class BrandUpdate(BaseModel):
@@ -102,6 +132,10 @@ class BrandUpdate(BaseModel):
     active: bool | None = None
     settings: dict[str, Any] | None = None
     llm_settings: BrandLLMSettingsInput | None = None
+    text_processing: BrandLLMSettingsInput | None = None
+    image_processing: BrandLLMSettingsInput | None = None
+    audio_processing: BrandLLMSettingsInput | None = None
+    billing_settings: BrandBillingSettingsInput | None = None
 
 
 class BrandPromptConfigUpdate(BaseModel):
@@ -180,6 +214,10 @@ class BrandOut(BaseModel):
     public_reply_guidelines: str | None
     active: bool
     llm_settings: BrandLLMSettingsOut | None = None
+    text_processing: BrandLLMSettingsOut | None = None
+    image_processing: BrandLLMSettingsOut | None = None
+    audio_processing: BrandLLMSettingsOut | None = None
+    billing_settings: BrandBillingSettingsOut = Field(default_factory=BrandBillingSettingsOut)
     created_at: datetime
     updated_at: datetime
 
@@ -212,7 +250,11 @@ def serialize_brand_output(brand: Any, *, include_llm_secret: bool = False) -> B
         fallback_handoff_message=brand.fallback_handoff_message,
         public_reply_guidelines=brand.public_reply_guidelines,
         active=brand.active,
-        llm_settings=BrandLLMSettingsOut(**serialize_brand_llm_settings(brand, include_secret=include_llm_secret)),
+        llm_settings=BrandLLMSettingsOut(**serialize_brand_llm_settings(brand, include_secret=include_llm_secret, modality="text")),
+        text_processing=BrandLLMSettingsOut(**serialize_brand_llm_settings(brand, include_secret=include_llm_secret, modality="text")),
+        image_processing=BrandLLMSettingsOut(**serialize_brand_llm_settings(brand, include_secret=include_llm_secret, modality="image")),
+        audio_processing=BrandLLMSettingsOut(**serialize_brand_llm_settings(brand, include_secret=include_llm_secret, modality="audio")),
+        billing_settings=BrandBillingSettingsOut(**serialize_brand_billing_settings(brand)),
         created_at=brand.created_at,
         updated_at=brand.updated_at,
     )
@@ -221,6 +263,10 @@ def serialize_brand_output(brand: Any, *, include_llm_secret: bool = False) -> B
 def apply_brand_payload(brand: Any, payload: BrandCreate | BrandUpdate) -> None:
     data = payload.model_dump(exclude_unset=True)
     llm_settings = data.pop("llm_settings", None)
+    text_processing = data.pop("text_processing", None)
+    image_processing = data.pop("image_processing", None)
+    audio_processing = data.pop("audio_processing", None)
+    billing_settings = data.pop("billing_settings", None)
     settings_json = data.pop("settings", None)
 
     for field, value in data.items():
@@ -229,5 +275,20 @@ def apply_brand_payload(brand: Any, payload: BrandCreate | BrandUpdate) -> None:
     merged_settings = brand.settings_json if settings_json is None else settings_json
     if llm_settings is not None:
         merged_settings = merge_brand_llm_settings(merged_settings, llm_settings)
-    if settings_json is not None or llm_settings is not None:
+    if text_processing is not None:
+        merged_settings = merge_brand_processing_settings(merged_settings, "text", text_processing)
+    if image_processing is not None:
+        merged_settings = merge_brand_processing_settings(merged_settings, "image", image_processing)
+    if audio_processing is not None:
+        merged_settings = merge_brand_processing_settings(merged_settings, "audio", audio_processing)
+    if billing_settings is not None:
+        merged_settings = merge_brand_billing_settings(merged_settings, billing_settings)
+    if (
+        settings_json is not None
+        or llm_settings is not None
+        or text_processing is not None
+        or image_processing is not None
+        or audio_processing is not None
+        or billing_settings is not None
+    ):
         setattr(brand, "settings_json", merged_settings)

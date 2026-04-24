@@ -45,12 +45,47 @@ class DashboardTotalsOut(BaseModel):
     pending_jobs: int
     failed_jobs: int
     feedback_items: int
+    customers: int = 0
+    ai_messages: int = 0
+    due_amount_bdt: float = 0.0
+    actual_cost_bdt: float = 0.0
+    profit_bdt: float = 0.0
 
 
 class DashboardChartPointOut(BaseModel):
     date: str
     conversations: int
     jobs: int
+    ai_messages: int = 0
+    billed_amount_bdt: float = 0.0
+    actual_cost_bdt: float = 0.0
+
+
+class DashboardPeriodOut(BaseModel):
+    period: str
+    start_at: str
+    end_at: str
+
+
+class DashboardUsageBreakdownOut(BaseModel):
+    usage_type: str
+    message_units: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    billed_amount_bdt: float = 0.0
+    actual_cost_bdt: float = 0.0
+
+
+class DashboardBrandFinancialOut(BaseModel):
+    brand_id: int
+    brand_name: str
+    message_units: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    due_amount_bdt: float = 0.0
+    actual_cost_bdt: float = 0.0
+    paid_amount_bdt: float = 0.0
+    profit_bdt: float = 0.0
 
 
 class DashboardOverviewOut(BaseModel):
@@ -59,3 +94,6 @@ class DashboardOverviewOut(BaseModel):
     recent_jobs: list[JobOut]
     chart: list[DashboardChartPointOut]
     brand_options: list[BrandOptionOut]
+    period: DashboardPeriodOut
+    usage_breakdown: list[DashboardUsageBreakdownOut]
+    brand_financials: list[DashboardBrandFinancialOut]

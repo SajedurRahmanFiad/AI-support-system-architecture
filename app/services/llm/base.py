@@ -27,6 +27,9 @@ class AttachmentInsight:
     analysis_confidence: float | None = None
     needs_clarification: bool = False
     clarification_reason: str | None = None
+    provider_name: str | None = None
+    model_name: str | None = None
+    token_usage: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -55,6 +58,7 @@ class BrandContext:
     tone_instructions: str
     fallback_handoff_message: str
     public_reply_guidelines: str | None
+    system_prompt: str | None = None
     rules: list[dict[str, Any]] = field(default_factory=list)
     style_examples: list[dict[str, Any]] = field(default_factory=list)
 

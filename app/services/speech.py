@@ -5,11 +5,13 @@ import tempfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from google import genai
 from google.genai import types
 
 from app.config import get_settings
+from app.services.llm.runtime import LLMRuntimeConfig, extract_brand_processing_settings, normalize_provider_name, resolve_llm_runtime_config
 
 
 @dataclass
@@ -22,6 +24,8 @@ class SpeechTranscriptionResult:
     needs_clarification: bool
     clarification_reason: str | None
     provider_name: str
+    model_name: str | None = None
+    token_usage: dict[str, Any] | None = None
 
 
 class SpeechProvider(ABC):
@@ -58,6 +62,8 @@ class MockSpeechProvider(SpeechProvider):
                 needs_clarification=True,
                 clarification_reason="Audio was too noisy in mock mode.",
                 provider_name=self.provider_name,
+                model_name="mock",
+                token_usage={},
             )
         return SpeechTranscriptionResult(
             transcript="Mock audio transcript",
@@ -68,15 +74,18 @@ class MockSpeechProvider(SpeechProvider):
             needs_clarification=False,
             clarification_reason=None,
             provider_name=self.provider_name,
+            model_name="mock",
+            token_usage={},
         )
 
 
 class GeminiSpeechProvider(SpeechProvider):
     provider_name = "gemini"
 
-    def __init__(self) -> None:
+    def __init__(self, runtime_config: LLMRuntimeConfig | None = None) -> None:
         self.settings = get_settings()
-        self.client = genai.Client(api_key=self.settings.gemini_api_key)
+        self.runtime = runtime_config or resolve_llm_runtime_config(settings=self.settings, modality="audio", preferred_provider="gemini")
+        self.client = genai.Client(api_key=self.runtime.api_key or self.settings.gemini_api_key)
 
     def transcribe_audio(
         self,
@@ -100,12 +109,12 @@ class GeminiSpeechProvider(SpeechProvider):
                 )
                 uploaded_file_name = uploaded.name
                 response = self.client.models.generate_content(
-                    model=self.settings.gemini_model,
+                    model=self.runtime.model or self.settings.gemini_model,
                     contents=[prompt, uploaded],
                 )
             else:
                 response = self.client.models.generate_content(
-                    model=self.settings.gemini_model,
+                    model=self.runtime.model or self.settings.gemini_model,
                     contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
                 )
         finally:
@@ -145,6 +154,8 @@ class GeminiSpeechProvider(SpeechProvider):
             needs_clarification=needs_clarification,
             clarification_reason=clarification_reason,
             provider_name=self.provider_name,
+            model_name=self.runtime.model or self.settings.gemini_model,
+            token_usage=self._serialize_usage_metadata(getattr(response, "usage_metadata", None)),
         )
 
     def _build_prompt(self, preferred_language: str | None, alternative_languages: list[str]) -> str:
@@ -183,6 +194,20 @@ class GeminiSpeechProvider(SpeechProvider):
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _serialize_usage_metadata(self, usage_metadata: Any) -> dict[str, Any]:
+        if not usage_metadata:
+            return {}
+        if hasattr(usage_metadata, "model_dump"):
+            try:
+                dumped = usage_metadata.model_dump()
+                if isinstance(dumped, dict):
+                    return dumped
+            except Exception:  # noqa: BLE001
+                pass
+        if isinstance(usage_metadata, dict):
+            return usage_metadata
+        return {"value": str(usage_metadata)}
 
     def _suffix_for_mime_type(self, mime_type: str) -> str:
         mapping = {
@@ -272,22 +297,32 @@ class GoogleCloudSpeechProvider(SpeechProvider):
             needs_clarification=needs_clarification,
             clarification_reason=clarification_reason,
             provider_name=self.provider_name,
+            model_name="google_cloud:long",
+            token_usage={},
         )
 
 
-def build_speech_provider() -> SpeechProvider:
+def build_speech_provider(brand: object | None = None) -> SpeechProvider:
     settings = get_settings()
-    provider_name = settings.speech_provider.strip().lower()
+    brand_model = brand if hasattr(brand, "settings_json") else None
+    brand_audio_settings = extract_brand_processing_settings(brand_model, "audio")
+    provider_name = normalize_provider_name(brand_audio_settings.get("provider") or settings.speech_provider)
+    runtime = resolve_llm_runtime_config(
+        brand_model,
+        settings=settings,
+        modality="audio",
+        preferred_provider="gemini" if provider_name == "gemini" else settings.llm_provider,
+    )
 
     if provider_name == "google_cloud":
         try:
             return GoogleCloudSpeechProvider()
         except Exception:  # noqa: BLE001
-            if settings.gemini_api_key:
-                return GeminiSpeechProvider()
+            if runtime.api_key or settings.gemini_api_key:
+                return GeminiSpeechProvider(runtime if runtime.provider == "gemini" else None)
             return MockSpeechProvider()
-    if provider_name == "gemini" and settings.gemini_api_key:
-        return GeminiSpeechProvider()
+    if provider_name == "gemini" and (runtime.api_key or settings.gemini_api_key):
+        return GeminiSpeechProvider(runtime)
     return MockSpeechProvider()
 
 

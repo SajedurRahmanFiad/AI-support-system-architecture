@@ -10,9 +10,10 @@ from app.services.llm.runtime import normalize_provider_name, resolve_llm_runtim
 if TYPE_CHECKING:
     from app import models
 
-def build_llm_provider(brand: models.Brand | None = None) -> LLMProvider:
+
+def build_llm_provider(brand: models.Brand | None = None, *, modality: str = "text") -> LLMProvider:
     settings = get_settings()
-    runtime = resolve_llm_runtime_config(brand, settings=settings)
+    runtime = resolve_llm_runtime_config(brand, settings=settings, modality=modality)
     provider = normalize_provider_name(runtime.provider or settings.llm_provider)
 
     if provider == "gemini" and runtime.api_key:
