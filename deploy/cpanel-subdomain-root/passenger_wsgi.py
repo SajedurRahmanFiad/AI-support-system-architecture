@@ -1,5 +1,6 @@
 import os
 import sys
+from threading import Lock
 from http import HTTPStatus
 from urllib.parse import quote
 
@@ -15,6 +16,9 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from app.main import app as asgi_app
+
+_client = TestClient(asgi_app)
+_client_lock = Lock()
 
 _HOP_BY_HOP_HEADERS = {
     "connection",
@@ -53,8 +57,8 @@ def application(environ, start_response):
     if content_length and content_length.isdigit():
         body = environ["wsgi.input"].read(int(content_length))
 
-    with TestClient(asgi_app) as client:
-        response = client.request(
+    with _client_lock:
+        response = _client.request(
             method,
             url,
             headers=_build_headers(environ),

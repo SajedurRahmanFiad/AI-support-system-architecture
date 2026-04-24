@@ -61,6 +61,8 @@ def cmd_doctor(_: argparse.Namespace) -> None:
         problems.append("LLM_PROVIDER is still set to mock.")
     if settings.llm_provider == "gemini" and not settings.gemini_api_key:
         problems.append("GEMINI_API_KEY is missing.")
+    if settings.llm_provider == "groq" and not settings.groq_api_key:
+        problems.append("GROQ_API_KEY is missing.")
     if settings.speech_provider == "google_cloud" and not settings.google_cloud_project_id:
         problems.append("GOOGLE_CLOUD_PROJECT_ID is missing for Google Cloud Speech.")
     if settings.platform_api_token == "change-this-platform-token":

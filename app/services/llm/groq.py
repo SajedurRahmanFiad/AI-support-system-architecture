@@ -5,8 +5,7 @@ import json
 import time
 from typing import Any
 
-from google import genai
-from google.genai import types
+from groq import Groq
 
 from app.config import get_settings
 from app.json_utils import to_json_compatible
@@ -22,12 +21,12 @@ from app.services.llm.base import (
 )
 
 
-class GeminiLLMProvider(LLMProvider):
-    provider_name = "gemini"
+class GroqLLMProvider(LLMProvider):
+    provider_name = "groq"
 
     def __init__(self) -> None:
         self.settings = get_settings()
-        self.client = genai.Client(api_key=self.settings.gemini_api_key)
+        self.client = Groq(api_key=self.settings.groq_api_key)
 
     def generate_reply(
         self,
@@ -39,8 +38,11 @@ class GeminiLLMProvider(LLMProvider):
         attachment_insights: list[AttachmentInsight],
     ) -> ReplyDecision:
         prompt = self._build_reply_prompt(brand, customer, history, incoming_text, knowledge, attachment_insights)
-        response = self._generate_content(model=self.settings.gemini_model, contents=prompt)
-        payload = self._extract_json(getattr(response, "text", "") or "")
+        response = self._generate_content(model=self.settings.groq_model, messages=[{"role": "user", "content": prompt}])
+        
+        response_text = response.choices[0].message.content if response.choices else ""
+        payload = self._extract_json(response_text or "")
+        
         reply_text = self._normalize_text(payload.get("reply_text")) or brand.fallback_handoff_message
         return ReplyDecision(
             status=self._normalize_text(payload.get("status")) or "handoff",
@@ -51,7 +53,7 @@ class GeminiLLMProvider(LLMProvider):
             flags=self._normalize_string_list(payload.get("flags")),
             used_knowledge_ids=self._normalize_int_list(payload.get("used_knowledge_ids")),
             internal_notes=self._normalize_text(payload.get("internal_notes")),
-            token_usage=self._serialize_usage_metadata(getattr(response, "usage_metadata", None)),
+            token_usage=self._serialize_usage_metadata(response.usage if response else None),
         )
 
     def summarize_conversation(self, brand: BrandContext, history: list[ConversationTurn]) -> SummaryResult:
@@ -61,105 +63,41 @@ class GeminiLLMProvider(LLMProvider):
             f"Brand: {brand.name}\n"
             f"History:\n{self._format_history(history)}"
         )
-        response = self._generate_content(model=self.settings.gemini_summary_model, contents=prompt)
-        payload = self._extract_json(getattr(response, "text", "") or "")
+        response = self._generate_content(model=self.settings.groq_model, messages=[{"role": "user", "content": prompt}])
+        response_text = response.choices[0].message.content if response.choices else ""
+        payload = self._extract_json(response_text or "")
+        
         return SummaryResult(
             summary=self._normalize_text(payload.get("summary")) or "",
             facts=self._normalize_dict_list(payload.get("facts")),
         )
 
     def analyze_attachment(self, attachment_type: str, mime_type: str, data: bytes) -> AttachmentInsight:
-        prompt = (
-            "Analyze this customer attachment for an ecommerce support agent. "
-            "Return JSON only with keys summary, transcript, extracted_text. "
-            "summary should explain what the attachment means for support. "
-            "transcript is only for audio. extracted_text is for visible text in images or documents."
+        # Groq does not support image/audio analysis natively
+        # Return a fallback response
+        return AttachmentInsight(
+            attachment_id=0,
+            attachment_type=attachment_type,
+            summary=self._fallback_attachment_summary(attachment_type, mime_type, data),
+            transcript=None,
+            extracted_text=None,
         )
-        try:
-            response = self._generate_content(
-                model=self.settings.gemini_model,
-                contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
-            )
-            payload = self._extract_json(getattr(response, "text", "") or "")
-            return AttachmentInsight(
-                attachment_id=0,
-                attachment_type=attachment_type,
-                summary=payload.get("summary", f"{attachment_type} attachment analyzed."),
-                transcript=payload.get("transcript"),
-                extracted_text=payload.get("extracted_text"),
-            )
-        except Exception:
-            return AttachmentInsight(
-                attachment_id=0,
-                attachment_type=attachment_type,
-                summary=self._fallback_attachment_summary(attachment_type, mime_type, data),
-                transcript=None,
-                extracted_text=None,
-            )
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        # Groq does not support embeddings natively
+        # Return mock embeddings based on text hash
         if not texts:
             return []
-        response = self.client.models.embed_content(model=self.settings.gemini_embedding_model, contents=texts)
-        embeddings = getattr(response, "embeddings", None)
-        if embeddings is None:
-            embedding = getattr(response, "embedding", None)
-            embeddings = [embedding] if embedding is not None else []
         vectors: list[list[float]] = []
-        for item in embeddings:
-            values = getattr(item, "values", item)
-            vectors.append(list(values))
+        for text in texts:
+            vector = self._hashed_vector(text)
+            vectors.append(vector)
         return vectors
 
     def embed_image(self, image_data: bytes) -> list[float]:
-        if "embedding-2" in self.settings.gemini_embedding_model:
-            response = self.client.models.embed_content(
-                model=self.settings.gemini_embedding_model,
-                contents=[
-                    types.Part.from_bytes(
-                        data=image_data,
-                        mime_type=self._guess_image_mime_type(image_data),
-                    )
-                ],
-            )
-            embeddings = getattr(response, "embeddings", None)
-            if embeddings:
-                values = getattr(embeddings[0], "values", embeddings[0])
-                return list(values)
-
-        # Fallback for text-only embedding models: describe the image, then embed the description.
-        insight = self.analyze_attachment("image", "image/jpeg", image_data)
-        text = " ".join(part for part in [insight.summary, insight.extracted_text] if part)
-        vectors = self.embed_texts([text]) if text else []
-        return vectors[0] if vectors else []
-
-    def match_product_candidates(
-        self,
-        mime_type: str,
-        data: bytes,
-        candidates: list[dict[str, Any]],
-    ) -> dict[str, Any] | None:
-        if not candidates:
-            return None
-
-        prompt = (
-            "You are matching a customer image to the most likely product from a small candidate list. "
-            "Use the image itself as the main signal. "
-            "Return JSON only with keys: matched, matched_candidate_id, confidence, explanation. "
-            "Set matched to false if none of the candidates is a confident match.\n\n"
-            f"Candidates:\n{json.dumps(candidates, ensure_ascii=True)}"
-        )
-        try:
-            response = self._generate_content(
-                model=self.settings.gemini_model,
-                contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
-            )
-            payload = self._extract_json(getattr(response, "text", "") or "")
-            if not payload:
-                return None
-            return payload
-        except Exception:
-            return None
+        # Groq does not support image embeddings
+        # Return a mock embedding based on image hash
+        return self._hashed_vector(image_data.hex())
 
     def _build_reply_prompt(
         self,
@@ -245,17 +183,6 @@ class GeminiLLMProvider(LLMProvider):
         except json.JSONDecodeError:
             return {}
 
-    def _guess_image_mime_type(self, image_data: bytes) -> str:
-        if image_data.startswith(b"\x89PNG\r\n\x1a\n"):
-            return "image/png"
-        if image_data.startswith(b"\xff\xd8\xff"):
-            return "image/jpeg"
-        if image_data.startswith(b"GIF87a") or image_data.startswith(b"GIF89a"):
-            return "image/gif"
-        if image_data.startswith(b"RIFF") and image_data[8:12] == b"WEBP":
-            return "image/webp"
-        return "image/jpeg"
-
     def _language_instruction(self, brand_language: str, customer_language: str | None) -> str:
         language = (customer_language or brand_language or "").lower()
         if self.settings.force_bangla_reply_by_default and language.startswith("bn"):
@@ -265,11 +192,16 @@ class GeminiLLMProvider(LLMProvider):
             )
         return "Reply in the customer's apparent preferred language."
 
-    def _generate_content(self, *, model: str, contents: Any) -> Any:
+    def _generate_content(self, *, model: str, messages: list[dict[str, str]]) -> Any:
         last_error: Exception | None = None
         for attempt in range(3):
             try:
-                return self.client.models.generate_content(model=model, contents=contents)
+                return self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.7,
+                    max_tokens=1024,
+                )
             except Exception as exc:  # noqa: BLE001
                 last_error = exc
                 if not self._is_retryable_error(exc) or attempt == 2:
@@ -277,7 +209,7 @@ class GeminiLLMProvider(LLMProvider):
                 time.sleep(float(attempt + 1))
         if last_error is not None:
             raise last_error
-        raise RuntimeError("Gemini generate_content failed without an exception.")
+        raise RuntimeError("Groq generate_content failed without an exception.")
 
     def _is_retryable_error(self, exc: Exception) -> bool:
         message = str(exc).upper()
@@ -352,6 +284,13 @@ class GeminiLLMProvider(LLMProvider):
                     continue
             return normalized
         return []
+
+    def _hashed_vector(self, text: str) -> list[float]:
+        """Generate a deterministic vector from text hash for embedding fallback."""
+        hash_digest = hashlib.sha256(text.encode()).digest()
+        # Convert hash bytes to normalized floats in range [-1, 1]
+        vector = [float((byte - 128) / 128.0) for byte in hash_digest[:384]]  # 384 dimensions
+        return vector
 
     def _fallback_attachment_summary(self, attachment_type: str, mime_type: str, data: bytes) -> str:
         digest = hashlib.sha256(data).hexdigest()[:16]

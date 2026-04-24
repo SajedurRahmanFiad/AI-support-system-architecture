@@ -255,17 +255,30 @@ class MessageProcessor:
                     attachment_insights=attachment_insights,
                 )
             except Exception as exc:
-                # If LLM fails, force handoff
-                decision = None
-                decision_status = "handoff"
-                assign_human_owner = False
-                confidence = 0.0
-                handoff_reason = f"LLM service error: {exc}"
-                customer_updates = {}
-                flags = list(dict.fromkeys(risk.flags + ["llm-error"]))
-                used_sources = []
-                token_usage = {}
-                reply_text = hydrated_brand.fallback_handoff_message
+                fallback_reply_text, fallback_sources = self._build_llm_failure_fallback_reply(knowledge_hits)
+                if fallback_reply_text:
+                    decision = None
+                    decision_status = "send"
+                    assign_human_owner = False
+                    confidence = max(self.settings.handoff_confidence_threshold, 0.56)
+                    handoff_reason = None
+                    customer_updates = {}
+                    flags = list(dict.fromkeys(risk.flags + ["llm-error", "knowledge-fallback"]))
+                    used_sources = fallback_sources
+                    token_usage = {}
+                    reply_text = fallback_reply_text
+                else:
+                    # If LLM fails and we do not have a strong knowledge-backed fallback, handoff.
+                    decision = None
+                    decision_status = "handoff"
+                    assign_human_owner = False
+                    confidence = 0.0
+                    handoff_reason = f"LLM service error: {exc}"
+                    customer_updates = {}
+                    flags = list(dict.fromkeys(risk.flags + ["llm-error"]))
+                    used_sources = []
+                    token_usage = {}
+                    reply_text = hydrated_brand.fallback_handoff_message
             else:
                 decision_status = decision.status
                 assign_human_owner = decision_status == "handoff"
@@ -437,6 +450,57 @@ class MessageProcessor:
         self.db.add(conversation)
         self.db.flush()
         return conversation
+
+    def _build_llm_failure_fallback_reply(
+        self,
+        knowledge_hits: list,
+    ) -> tuple[str | None, list[dict]]:
+        if not knowledge_hits:
+            return None, []
+
+        top_hit = knowledge_hits[0]
+        if getattr(top_hit, "score", 0.0) < 0.3:
+            return None, []
+
+        reply_text = self._extract_fallback_reply_text(getattr(top_hit, "content", ""))
+        if not reply_text:
+            return None, []
+
+        return reply_text, [
+            {
+                "chunk_id": top_hit.chunk_id,
+                "document_id": top_hit.document_id,
+                "title": top_hit.title,
+                "score": top_hit.score,
+                "type": "knowledge_fallback",
+            }
+        ]
+
+    def _extract_fallback_reply_text(self, content: str) -> str | None:
+        normalized = " ".join((content or "").strip().split())
+        if not normalized:
+            return None
+
+        sentences: list[str] = []
+        buffer: list[str] = []
+        for char in normalized:
+            buffer.append(char)
+            if char in ".!?।":
+                sentence = "".join(buffer).strip()
+                if sentence:
+                    sentences.append(sentence)
+                buffer = []
+                if len(sentences) >= 2 or len(" ".join(sentences)) >= 220:
+                    break
+
+        if buffer and not sentences:
+            sentences.append("".join(buffer).strip())
+
+        candidate = " ".join(item for item in sentences if item).strip()
+        if not candidate:
+            candidate = normalized[:280].rsplit(" ", 1)[0].strip() or normalized[:280].strip()
+
+        return candidate[:280].strip() or None
 
     def _bind_attachments(
         self,

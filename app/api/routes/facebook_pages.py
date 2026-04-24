@@ -14,6 +14,8 @@ from app.api.schemas.facebook_pages import (
     FacebookPageUpdate,
 )
 from app.services.brand_service import get_brand_or_404
+from app.services.facebook_credentials import FacebookPageCredentialValidator
+from app.config import get_settings
 
 router = APIRouter(prefix="/v1/facebook-pages", dependencies=[Depends(require_platform_access)])
 
@@ -110,6 +112,12 @@ def list_facebook_pages(
 def create_facebook_page(payload: FacebookPageCreate, db: DbSession) -> FacebookPageOut:
     get_brand_or_404(db, payload.brand_id)
     _ensure_unique_page_id(db, payload.page_id)
+    _validate_credentials_on_save(
+        app_id=payload.app_id,
+        app_secret=payload.app_secret,
+        page_id=payload.page_id,
+        page_access_token=payload.page_access_token,
+    )
     page = models.FacebookPageAutomation(**payload.model_dump())
     db.add(page)
     db.commit()
@@ -137,6 +145,14 @@ def update_facebook_page(page_id: int, payload: FacebookPageUpdate, db: DbSessio
     if next_page_id is not None:
         _ensure_unique_page_id(db, next_page_id, existing_id=page.id)
 
+    if {"page_id", "app_id", "app_secret", "page_access_token"} & data.keys():
+        _validate_credentials_on_save(
+            app_id=str(data.get("app_id", page.app_id)),
+            app_secret=str(data.get("app_secret", page.app_secret)),
+            page_id=str(data.get("page_id", page.page_id)),
+            page_access_token=str(data.get("page_access_token", page.page_access_token)),
+        )
+
     for field, value in data.items():
         setattr(page, field, value)
 
@@ -145,3 +161,30 @@ def update_facebook_page(page_id: int, payload: FacebookPageUpdate, db: DbSessio
     db.refresh(page)
     page = _get_page_or_404(db, page.id)
     return _serialize_detail(page)
+
+
+@router.delete("/{page_id}")
+def delete_facebook_page(page_id: int, db: DbSession) -> dict[str, str]:
+    page = _get_page_or_404(db, page_id)
+    db.delete(page)
+    db.commit()
+    return {"status": "deleted"}
+
+
+def _validate_credentials_on_save(
+    *,
+    app_id: str,
+    app_secret: str,
+    page_id: str,
+    page_access_token: str,
+) -> None:
+    settings = get_settings()
+    if not settings.facebook_credential_validation_enabled:
+        return
+
+    FacebookPageCredentialValidator().validate_page_access_token(
+        app_id=app_id,
+        app_secret=app_secret,
+        page_id=page_id,
+        page_access_token=page_access_token,
+    )

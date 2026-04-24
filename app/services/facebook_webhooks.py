@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import HTTPException, status
 import httpx
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app import models
@@ -364,17 +364,24 @@ class FacebookWebhookService:
         if not outbound_message_id:
             return "no_reply"
 
-        outbound_message = self.db.get(models.Message, outbound_message_id)
-        if outbound_message is None:
+        outbound_row = self.db.execute(
+            select(
+                models.Message.id,
+                models.Message.external_message_id,
+                models.Message.text,
+            ).where(models.Message.id == outbound_message_id)
+        ).one_or_none()
+        if outbound_row is None:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Generated reply {outbound_message_id} could not be loaded for Facebook delivery.",
             )
 
-        if self._clean_text(outbound_message.external_message_id):
+        existing_delivery_id = self._clean_text(outbound_row.external_message_id)
+        if existing_delivery_id:
             return "already_sent"
 
-        reply_text = (getattr(result, "reply_text", None) or outbound_message.text or "").strip()
+        reply_text = (getattr(result, "reply_text", None) or outbound_row.text or "").strip()
         if not reply_text:
             return "no_reply"
 
@@ -383,10 +390,27 @@ class FacebookWebhookService:
         except FacebookMessengerDeliveryError as exc:
             raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
-        outbound_message.external_message_id = (
-            self._clean_text(delivery.get("message_id")) or f"facebook-sent:{outbound_message.id}"
+        sent_message_id = (
+            self._clean_text(delivery.get("message_id")) or f"facebook-sent:{outbound_message_id}"
         )
-        self.db.add(outbound_message)
+        update_result = self.db.execute(
+            update(models.Message)
+            .where(models.Message.id == outbound_message_id)
+            .values(external_message_id=sent_message_id)
+            .execution_options(synchronize_session=False)
+        )
+        if update_result.rowcount == 0:
+            persisted_delivery_id = self.db.scalar(
+                select(models.Message.external_message_id).where(models.Message.id == outbound_message_id)
+            )
+            if self._clean_text(persisted_delivery_id):
+                self.db.rollback()
+                return "already_sent"
+            self.db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Generated reply {outbound_message_id} could not be marked as delivered.",
+            )
         self.db.commit()
         return "sent"
 

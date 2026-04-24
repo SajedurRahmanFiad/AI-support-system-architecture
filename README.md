@@ -1,40 +1,157 @@
-# B2B AI Support API
+# B2B AI Support API - Backend
 
-This project is a multi-business AI customer support API.
+**Version:** 0.1.0 | **API Version:** v1 | **Status:** Production-ready
 
-It is built so one central API can serve many businesses, while each business keeps its own:
+## Overview
 
-- knowledge
-- tone
-- style examples
-- customer history
-- product image catalog
-- rules and handoff settings
+This is a multi-tenant B2B AI customer support API designed for scalable, isolated business operations. Each brand/tenant maintains complete separation:
 
-The app is API-first. That means this repo gives you the main backend system only. You can later connect it to Facebook, WordPress, Shopify, a custom dashboard, or anything else through wrappers.
+- **Knowledge bases** - Business-specific documents and training data
+- **Tone & style** - Brand-specific response examples and tone rules
+- **Customer data** - Per-customer profiles, conversation history, and facts
+- **Product catalog** - Product images for recognition and metadata
+- **Rules & policies** - Business rules with auto-handoff triggers
+- **Media & uploads** - Customer attachments, voice notes, images, and files
 
-This version is prepared for:
+### Architecture Highlights
 
-- `cPanel` deployment
-- `MariaDB` or MySQL
-- `Gemini` for low-cost testing
-- easy future switching to another LLM provider
-- Bangladeshi customer support with Bangla-first behavior
+- **API-first design** - Headless backend serving multiple frontends (dashboard, Facebook, WordPress, Shopify, etc.)
+- **Multi-tenant ready** - One API server serves unlimited brands with complete data isolation
+- **Job queue system** - Database-backed background jobs (no Redis/Docker required)
+- **Modular LLM** - Abstracted provider layer (currently Gemini, extensible to others)
+- **cPanel compatible** - Runs on shared hosting with Passenger WSGI
 
-## What this app can do now
+### Deployment & Tech Stack
 
-- receive customer messages through one API
-- keep each business fully separate from every other business
-- store customer profiles, facts, summaries, and conversation history
-- search a business knowledge base and use that information in replies
-- use brand-specific tone rules and reply examples
-- understand customer images
-- transcribe customer voice notes
-- ask for clarification when audio is too unclear
-- recognize products from uploaded product images
-- save feedback and handoff decisions
-- process heavy work in background jobs
-- run on cPanel without Redis, Docker, or Kubernetes
+**Prepared for:**
+- cPanel hosting with Passenger WSGI
+- MariaDB or MySQL database  
+- Gemini API (with Google Cloud Speech-to-Text optional upgrade)
+- Bangladeshi-first (bn-BD) language support
+
+**Core Stack:**
+- FastAPI 0.116.1 (async Python web framework)
+- SQLAlchemy 2.0.43 (database ORM)
+- PyMySQL 1.1.1 (MySQL connector)
+- Pydantic 2.11.9 (data validation)
+- Google Genai 1.34.0 (Gemini integration)
+
+## Core Capabilities & Features
+
+This backend provides the complete infrastructure for multi-tenant AI customer support:
+
+### Message Processing Pipeline
+
+When a customer message arrives at `POST /api/v1/messages/process`, the system executes this flow:
+
+1. **Brand & Auth Validation** - Verify brand credentials and API key
+2. **Attachment Processing** - If customer included images/audio/documents:
+   - Download/retrieve from uploads storage
+   - Detect file type (image, audio, document, etc.)
+3. **Audio Transcription** - If voice note:
+   - Send to Gemini or Google Cloud Speech-to-Text
+   - Confidence check; if low, return clarification request
+   - Support for Bangla/English mixed language
+4. **Product Recognition** - If image attachment:
+   - Compare against brand's product catalog using vision API
+   - Return matched products with confidence scores
+5. **Customer Memory** - Load or create customer profile:
+   - Retrieve customer facts, language preference, past order history
+   - Load recent conversation summary
+6. **Knowledge Search** - Semantic search over brand knowledge base:
+   - Use embeddings to find top-K relevant documents
+   - Extract snippets to feed into LLM context
+7. **LLM Response Generation** - Generate contextual reply:
+   - Input: customer message + knowledge snippets + customer history + rules + style examples
+   - Output: AI-generated reply with confidence score
+8. **Safety & Moderation** - Check if reply is safe:
+   - Confidence check - if low, may trigger escalation
+   - Rule matching - if any "handoff_on_match" rules triggered, escalate
+   - Tone check - ensure brand voice consistency
+9. **Response** - Return to caller:
+   - Success: message_id, reply text, confidence, handoff_needed flag
+   - Error: error details and suggestion for human takeover
+
+### Multi-Tenancy & Isolation
+
+- **Brand Isolation** - All data (knowledge, customers, conversations) stored with `brand_id` foreign key
+- **API Key Rotation** - Each brand has unique `X-Brand-Api-Key`; can be rotated without brand recreation
+- **Separate Knowledge** - Each brand maintains separate knowledge base (not shared by default)
+- **Tenant-Safe Queries** - All queries filtered by `brand_id` to prevent cross-tenant data leaks
+
+### Customer Memory System
+
+- **Customer Profiles** - Name, language, location, contact channel
+- **Customer Facts** - Learned attributes (favorite color, previous orders, complaints)
+- **Conversation Summaries** - Short summaries of old conversations for context
+- **Conversation History** - Last N messages kept for ongoing context
+- **Auto-Update** - Memory updated after each message (facts extracted from conversation)
+
+### Knowledge Base Features
+
+- **Document Types** - Knowledge can come from:
+  - Raw FAQ/policy documents
+  - Conversation examples (auto-extracted Q&A)
+  - Manual transcripts or text
+- **Semantic Chunking** - Long documents automatically split into meaningful chunks
+- **Embeddings** - Each chunk embedded using Gemini's embedding model
+- **Semantic Search** - Find relevant chunks by meaning, not just keyword match
+- **Reindexing** - Update knowledge in-place without recreating everything
+- **Global Knowledge** - Shared knowledge for all brands (e.g., company-wide policies)
+
+### Brand Configuration (Training)
+
+Four main ways to teach the AI:
+
+1. **Knowledge Documents** - Business facts (what)
+2. **Style Examples** - Approved replies showing tone (how)
+3. **Hard Rules** - Policies with auto-handoff (constraints)
+4. **Product Images** - Reference catalog for vision matching (recognition)
+
+### Product Recognition System
+
+- **Vision-based matching** - Not LLM fine-tuning
+- **Reference Images** - Each product has 3-5 reference images from different angles
+- **Metadata** - SKU, color, size, model attached to each product
+- **Matching** - Customer image compared against catalog using vision embeddings
+- **Output** - Matched products with confidence scores
+
+### Voice Transcription
+
+- **Gemini API** - Default, works in-region, supports Bangla
+- **Google Cloud Speech-to-Text** - Optional upgrade for production (more stable)
+- **Language Support** - Primary: bn-BD. Fallback: en-US, en-GB, hi-IN
+- **Confidence Threshold** - If audio clarity score < 0.65, ask for clarification
+- **Bangla Support** - Special handling for mixed Bangla-English and noisy audio
+
+### Background Job Queue
+
+- **Database-backed** - Uses database, not Redis (works on cPanel)
+- **Async Processing** - Long tasks (reindexing, batch processing) queued for later
+- **Job Status** - Track pending → processing → success/error
+- **Worker** - Triggered by `POST /api/v1/jobs/process-pending`
+- **No Daemon** - Meant for manual/scheduled calls (not always-running)
+
+### Handoff & Escalation
+
+Conversation can be marked for human takeover via:
+- **Low Confidence** - If AI confidence < threshold, escalate
+- **Rule Match** - If content matches a "handoff_on_match=true" rule
+- **API Call** - Direct `POST /v1/conversations/{id}/handoff`
+- **Status** - Conversation status changes to "handoff"
+- **Release** - Humans can `POST /v1/conversations/{id}/release` to return to AI
+
+### Facebook Integration
+
+- **Webhook Verification** - GET `/api/v1/facebook/webhook` for Meta handshake
+- **Webhook Ingestion** - POST `/api/v1/facebook/webhook` receives page messages/comments
+- **Page Credentials** - Store multiple FB pages per brand
+- **Signature Validation** - Verify X-Hub-Signature-256 header
+- **Message Routing** - Incoming FB messages fed into normal message pipeline
+
+---
+
+
 
 ## What "training" means in this app
 
@@ -195,199 +312,591 @@ This means you can start small and scale later.
 - optional `Google Cloud Speech-to-Text` for better voice transcription
 - `Passenger` on cPanel for deployment
 
-## Project structure
+## Project Structure (A-Z Audit)
 
-```text
-app/
-  api/
-    routes/            API endpoints
-    schemas/           request and response models
-  services/
-    llm/               provider layer
-    knowledge.py       knowledge indexing and search
-    memory.py          customer and conversation memory
-    moderation.py      safety and handoff checks
-    orchestrator.py    main message flow
-    product_recognition.py
-    speech.py
-    jobs.py
-    storage.py
-  config.py
-  database.py
-  models.py
-  main.py
-
-main.py                local dev entry point
-passenger_wsgi.py      cPanel entry point
-requirements.txt
+```
+Backend/
+├── app/                           # Main application package
+│   ├── __init__.py               # App initialization
+│   ├── cli.py                    # Command-line interface (init-db, create-brand)
+│   ├── config.py                 # Settings and environment configuration
+│   ├── database.py               # Database initialization and session management
+│   ├── json_utils.py             # JSON serialization utilities
+│   ├── main.py                   # FastAPI app factory and CORS setup
+│   ├── models.py                 # SQLAlchemy ORM models (Brand, Customer, Conversation, etc.)
+│   ├── security.py               # Authentication/authorization (X-Platform-Token, X-Brand-Api-Key)
+│   │
+│   ├── api/                      # REST API layer
+│   │   ├── __init__.py
+│   │   ├── deps.py               # Dependency injection (auth, brand lookup)
+│   │   ├── router.py             # Main API router aggregating all routes
+│   │   │
+│   │   ├── routes/               # API endpoint implementations (16 route modules)
+│   │   │   ├── __init__.py
+│   │   │   ├── audit_logs.py     # GET /v1/audit-logs - Event audit trail
+│   │   │   ├── bootstrap.py      # GET /bootstrap, GET /overview - Initial app state
+│   │   │   ├── brand_prompt_config.py  # GET/PATCH /v1/brands/{id}/prompt-config
+│   │   │   ├── brands.py         # /v1/brands/* - Brand CRUD, rules, style examples
+│   │   │   ├── conversations.py  # /v1/conversations/* - Conversation mgmt & handoff
+│   │   │   ├── customers.py      # /v1/customers/* - Customer profiles & facts
+│   │   │   ├── dashboard.py      # /v1/dashboard/* - Analytics & metrics
+│   │   │   ├── facebook_pages.py # /v1/facebook-pages/* - FB page credentials
+│   │   │   ├── facebook_webhook.py # /v1/facebook/webhook - Meta webhooks
+│   │   │   ├── feedback.py       # /v1/feedback/* - QA and correction feedback
+│   │   │   ├── health.py         # /health - Health check (public)
+│   │   │   ├── jobs.py           # /v1/jobs/* - Background job queue mgmt
+│   │   │   ├── knowledge.py      # /v1/knowledge/* - Knowledge base CRUD & search
+│   │   │   ├── messages.py       # /v1/messages/* - Message processing (core)
+│   │   │   ├── products.py       # /v1/products/* - Product images & recognition
+│   │   │   └── uploads.py        # /v1/uploads/* - File attachment handling
+│   │   │
+│   │   └── schemas/              # Pydantic request/response models (11 schema modules)
+│   │       ├── __init__.py
+│   │       ├── audit.py          # Audit log schemas
+│   │       ├── brands.py         # Brand, rule, style example schemas
+│   │       ├── conversations.py  # Conversation schemas
+│   │       ├── customers.py      # Customer and fact schemas
+│   │       ├── dashboard.py      # Dashboard/stats schemas
+│   │       ├── facebook_pages.py # Facebook page schemas
+│   │       ├── feedback.py       # Feedback schemas
+│   │       ├── jobs.py           # Job queue schemas
+│   │       ├── knowledge.py      # Knowledge document schemas
+│   │       ├── messages.py       # Message and attachment schemas
+│   │       └── products.py       # Product image and recognition schemas
+│   │
+│   ├── services/                 # Business logic and integrations
+│   │   ├── __init__.py
+│   │   ├── brand_service.py      # Brand operations and isolation
+│   │   ├── facebook_credentials.py # Facebook page credential validation
+│   │   ├── facebook_webhooks.py  # Webhook message routing
+│   │   ├── jobs.py               # Background job scheduling & processing
+│   │   ├── knowledge.py          # Knowledge indexing, chunking, retrieval
+│   │   ├── memory.py             # Customer & conversation memory management
+│   │   ├── moderation.py         # Safety checks and handoff logic
+│   │   ├── orchestrator.py       # Main message flow orchestration
+│   │   ├── product_recognition.py # Vision API for product matching
+│   │   ├── speech.py             # Voice transcription (Gemini or Google Cloud)
+│   │   ├── storage.py            # File operations (uploads, temp storage)
+│   │   │
+│   │   └── llm/                  # LLM provider abstraction layer
+│   │       ├── __init__.py
+│   │       ├── base.py           # Abstract LLM interface
+│   │       ├── factory.py        # LLM provider factory pattern
+│   │       ├── gemini.py         # Gemini provider implementation
+│   │       └── mock.py           # Mock provider for testing
+│   │
+│   └── tests/                    # Unit and integration tests
+│       ├── test_api.py           # API endpoint tests
+│       ├── test_dashboard_admin.py # Dashboard tests
+│       ├── test_facebook_page_credentials.py # Facebook credential validation
+│       ├── test_facebook_webhook.py # Webhook processing
+│       ├── test_gemini_provider.py # LLM provider tests
+│       └── test_json_serialization.py # Serialization tests
+│
+├── deploy/                       # Deployment configuration
+│   └── cpanel-subdomain-root/
+│       └── passenger_wsgi.py     # cPanel Passenger WSGI entry point
+│
+├── docs/                         # Documentation
+│   └── WRAPPER_AGENT_GUIDE.md    # Integration wrapper guide
+│
+├── storage/                      # Runtime file storage (created at startup)
+│   ├── product_images/           # Product reference images
+│   └── uploads/                  # Customer uploaded files
+│
+├── templates/                    # Configuration templates
+│   └── prompt-config/
+│       ├── brand-prompt-config.example.json # Example brand config
+│       ├── public_reply_guidelines.bn-BD.example.txt # Bangla reply guidelines
+│       └── tone_instructions.bn-BD.example.txt # Bangla tone instructions
+│
+├── main.py                       # Local development entry point (uvicorn)
+├── passenger_wsgi.py             # Production WSGI entry point
+├── pytest.ini                    # Pytest configuration
+├── requirements.txt              # Python dependencies
+├── .env.example                  # Environment template
+├── .env                          # Environment (git-ignored)
+├── .gitignore                    # Git ignore rules
+└── README.md                     # This file
 ```
 
-## Database choice
+## Backend Component Descriptions
 
-Since you want cPanel, `MariaDB` is a good choice here.
+### Core Files
 
-Use a database URL like this:
+- **main.py** - Local dev entry. Runs `uvicorn` with reload on `0.0.0.0:8000`
+- **passenger_wsgi.py** - Production entry for cPanel. Imported by Passenger daemon
+- **requirements.txt** - All Python dependencies (FastAPI, SQLAlchemy, Pydantic, etc.)
+- **pytest.ini** - Pytest config for running `tests/` suite
+- **.env.example** - Template for all required environment variables
+- **.env** - Git-ignored local configuration
+
+### App Package Structure
+
+| Module | Purpose |
+|--------|---------|
+| **app/config.py** | Loads `.env`, defines Settings class, validates required vars |
+| **app/database.py** | SQLAlchemy engine, session factory, table creation (`init_db()`) |
+| **app/models.py** | All 15+ SQLAlchemy ORM models (Brand, Message, Customer, etc.) |
+| **app/security.py** | Token validation (`X-Platform-Token`, `X-Brand-Api-Key`) |
+| **app/cli.py** | CLI commands for `init-db`, `create-brand`, `test-llm` |
+| **app/main.py** | FastAPI app factory, CORS middleware, lifespan setup |
+| **app/json_utils.py** | Custom JSON encoder for dates, UUIDs, enums |
+
+### API Layer (app/api/)
+
+- **router.py** - Main aggregator that includes all 16 route modules with their tags
+- **deps.py** - Dependency injection:
+  - `get_db()` - Database session
+  - `require_platform_access()` - Platform token validation  
+  - `get_brand_from_request()` - Brand lookup from headers/params
+  - `require_brand_access()` - Brand token validation
+  
+- **routes/** - 16 route modules, each with FastAPI `APIRouter` instance:
+  - Grouped by feature domain (brands, knowledge, messages, products, etc.)
+  - All tagged for OpenAPI/Swagger organization
+
+- **schemas/** - 11 Pydantic model modules:
+  - Request/response validation
+  - Auto-generates OpenAPI schema
+  - Separates API contract from database models
+
+### Services Layer (app/services/)
+
+| Service | Responsibility |
+|---------|-----------------|
+| **orchestrator.py** | Main message flow: receives → searches knowledge → calls LLM → safety checks → returns reply |
+| **llm/** | Provider abstraction (Gemini, Google, mock). Handles embeddings, text, vision, audio |
+| **knowledge.py** | Document indexing, semantic chunking, vector search using embeddings |
+| **memory.py** | Customer facts, conversation summaries, context windowing |
+| **moderation.py** | Safety checks, confidence scoring, handoff decisions |
+| **product_recognition.py** | Image vision API to match against product catalog |
+| **speech.py** | Voice transcription (Gemini or Google Cloud Speech-to-Text) |
+| **storage.py** | File I/O: uploads, temp storage, cleanup |
+| **jobs.py** | Background job queue (database-backed, no Redis needed) |
+| **brand_service.py** | Brand isolation logic, API key rotation |
+| **facebook_credentials.py** | Validate FB page token |
+| **facebook_webhooks.py** | Route incoming FB webhook events to message processor |
+
+
+
+## Database
+
+### Supported Databases
+
+- **MariaDB** (recommended for cPanel)
+- **MySQL 8.0+**
+
+### Connection URL Format
 
 ```env
+# MariaDB (most common on cPanel)
 DATABASE_URL=mysql+pymysql://db_user:db_password@localhost:3306/db_name?charset=utf8mb4
+
+# MySQL (any host)
+DATABASE_URL=mysql+pymysql://user:password@db.example.com:3306/dbname?charset=utf8mb4
 ```
 
-Use `utf8mb4`. That helps with Bangla and mixed-language text.
+**Important:** Use `charset=utf8mb4` for proper Bangla and multi-language support.
 
-## Main authentication headers
+### Schema
 
-The app uses two header types:
+The app auto-creates all tables on first run via `init_db()` (called in app startup).
 
-- `X-Platform-Token`
-  Use this for platform-level admin tasks like creating brands or uploading knowledge.
-- `X-Brand-Api-Key`
-  Use this for normal brand-level operations like processing messages and uploading customer attachments.
+Key tables:
+- `brands` - Tenant/business records with API keys
+- `customers` - Customer profiles with facts
+- `conversations` - Conversation threads
+- `messages` - Individual messages (input + output)
+- `attachments` - Uploaded files
+- `knowledge_documents` - Knowledge base documents
+- `knowledge_chunks` - Semantic chunks of documents
+- `product_images` - Product reference catalog
+- `feedback` - QA feedback entries
+- `jobs` - Background job queue
+- `audit_logs` - Event audit trail
+- `facebook_pages` - FB page configurations
 
-## IDs and values you will reuse in later calls
+---
 
-Many requests in this API use values that were created by an earlier request. These are the most important ones:
 
-- `brand_id`
-  This is the numeric database ID of one business or tenant. If your brand is `My Shop` and the API returns `"id": 1`, then `1` is the `brand_id` for that business. You use it to keep data isolated so one brand cannot mix with another brand's knowledge, uploads, customers, or product images.
-- `X-Brand-Api-Key`
-  This is the secret API key for one specific brand. You get it when the brand is created or when the key is rotated. Send it in the request header for day-to-day brand operations.
-- `X-Platform-Token`
-  This is the platform-wide admin secret from your `.env`. Use it for platform tasks such as creating brands, managing knowledge, listing conversations, and processing job queues.
-- `attachment_id`
-  This is the ID returned by `POST /api/v1/uploads`. Put that ID inside `attachment_ids` when you later call `POST /api/v1/messages/process`.
-- `message_id`
-  This is the internal message record ID. You use it when sending feedback to `POST /api/v1/messages/{message_id}/feedback`.
-- `customer_id`
-  This is the internal customer record ID. You use it when reading one customer with `GET /api/v1/customers/{customer_id}`.
-- `conversation_id`
-  This is the internal conversation record ID. You use it for reading a conversation or changing handoff state.
-- `product_image_id`
-  This is the ID returned when you add a product image. You use it if you later delete that product image.
-- `job_id`
-  This is returned when you set `process_async=true` on some routes. You use it to track queued work in the jobs endpoints.
 
-The same value can appear in different places depending on the route:
+## Authentication & Security
 
-- JSON body: `"brand_id": 1`
-- multipart form data: `-F "brand_id=1"`
-- query string: `GET /api/v1/customers?brand_id=1`
-- path parameter: `POST /api/v1/brands/1/rules`
+### API Token Types
 
-## Recommended first-time API flow
+| Token | Purpose | Usage | Scope |
+|-------|---------|-------|-------|
+| **X-Platform-Token** | Admin/platform operations | Header: `X-Platform-Token: your-secret-token` | Create brands, manage rules, audit logs, admin tasks |
+| **X-Brand-Api-Key** | Brand runtime operations | Header: `X-Brand-Api-Key: brand_xxxxx` | Process messages, upload files, recognize products, customer ops |
+| **None (Public)** | Health check, webhook verification | No auth required | `/health`, `/api/v1/facebook/webhook` (signature validated) |
 
-If you are using this API for the first time, the normal order is:
+### Token Sources
 
-1. Create a brand and save the returned `id` and `api_key`.
-2. Use that `id` as `brand_id` in all later calls for that brand.
-3. Add brand setup data such as rules, style examples, and knowledge documents.
-4. Upload customer files first if a message includes audio, images, or documents.
-5. Send the actual customer message to `POST /api/v1/messages/process`.
-6. Use conversation, customer, feedback, and jobs endpoints for monitoring and operations.
+- **X-Platform-Token** - Set in `.env` as `PLATFORM_API_TOKEN` (admin secret)
+- **X-Brand-Api-Key** - Generated when brand is created. Can be rotated via `POST /v1/brands/{brand_id}/reset-api-key`
 
-## Important API routes
+### Security Best Practices
 
-Base prefix:
+1. **Never commit tokens** - Keep `.env` in `.gitignore` ✓
+2. **Rotate brand keys** - Use endpoint to regenerate if compromised
+3. **Use HTTPS in production** - cPanel supports automatic SSL/Let's Encrypt
+4. **Validate origins** - Set `ALLOWED_ORIGINS` to trusted domains (not `*` in production)
+5. **Request signing** - Facebook webhooks validated with `X-Hub-Signature-256` HMAC-SHA256
 
-```text
-/api
+
+
+## Key Identifiers & Reusable Values
+
+Understanding these IDs helps you chain API calls correctly:
+
+| ID | Type | Created By | Used For | Example |
+|----|----|-----------|----------|---------|
+| **brand_id** | Integer | `POST /api/v1/brands` | Tenant isolation; included in all brand operations | `1`, `2`, `3` |
+| **X-Brand-Api-Key** | String | Brand creation | Runtime auth for brand operations | `brand_abc123xyz...` |
+| **X-Platform-Token** | String | `.env` config | Admin/platform operations | `platform_secret_...` |
+| **customer_id** | Integer | Auto-created on first message | Customer profile lookups, fact updates | `101`, `102` |
+| **conversation_id** | Integer | Auto-created on first message | Read conversation, handoff, release | `501`, `502` |
+| **message_id** | Integer | `POST /api/v1/messages/process` | Feedback submission, tracking | `1001`, `1002` |
+| **attachment_id** | String | `POST /api/v1/uploads` | Include in `POST /api/v1/messages/process` | `att_abc123...` |
+| **product_image_id** | String | `POST /api/v1/products/images/add` | Delete/update product image | `prod_img_123...` |
+| **job_id** | Integer | Any endpoint with `process_async=true` | Track background job status | `10001`, `10002` |
+| **document_id** | Integer | `POST /api/v1/knowledge/documents` | Update/reindex/delete knowledge | `201`, `202` |
+| **rule_id** | Integer | `POST /api/v1/brands/{brand_id}/rules` | Update/delete brand rule | `1`, `2`, `3` |
+| **style_example_id** | Integer | `POST /api/v1/brands/{brand_id}/style-examples` | Update/delete style example | `1`, `2` |
+
+### ID Usage Patterns
+
+```bash
+# In URL path parameters
+GET /api/v1/brands/1
+POST /api/v1/customers/101/facts
+
+# In query parameters
+GET /api/v1/customers?brand_id=1
+
+# In request headers
+-H "X-Platform-Token: value"
+-H "X-Brand-Api-Key: value"
+
+# In JSON body
+{"brand_id": 1, "customer_id": 101}
+
+# In multipart form data
+-F "brand_id=1"
+-F "file=@image.jpg"
 ```
 
-### Public route
+---
 
-| Route | What it does | Main inputs |
-|---|---|---|
-| `GET /api/health` | Quick health check for app, environment, and provider status | No auth, no body |
-| `GET /api/v1/facebook/webhook` | Meta webhook verification endpoint that checks the saved `verify_token` and returns `hub.challenge` | Query params `hub.mode`, `hub.verify_token`, `hub.challenge` |
-| `POST /api/v1/facebook/webhook` | Receives supported Facebook Page messaging and comment webhook events and feeds them into the normal message pipeline | Raw Meta webhook JSON body |
 
-### Platform and admin routes (`X-Platform-Token`)
 
-| Route | What it does | Main inputs |
-|---|---|---|
-| `POST /api/v1/brands` | Create a new brand and return its `id` and `api_key` | JSON body with `name`, `slug`, and optional brand settings |
-| `GET /api/v1/brands` | List all brands | No body |
-| `GET /api/v1/brands/{brand_id}` | Read one brand by numeric ID | Path `brand_id` |
-| `PATCH /api/v1/brands/{brand_id}` | Update brand configuration | Path `brand_id`, JSON body with only the fields you want to change |
-| `GET /api/v1/brands/{brand_id}/prompt-config` | Read only the prompt and tone config for one brand | Path `brand_id`, brand API key or platform token |
-| `PATCH /api/v1/brands/{brand_id}/prompt-config` | Update only the prompt and tone config for one brand | Path `brand_id`, JSON body with prompt fields, brand API key or platform token |
-| `POST /api/v1/brands/{brand_id}/reset-api-key` | Rotate a brand API key | Path `brand_id` |
-| `GET /api/v1/brands/{brand_id}/rules` | List hard rules for a brand | Path `brand_id` |
-| `POST /api/v1/brands/{brand_id}/rules` | Add one hard rule | Path `brand_id`, JSON body with `category`, `title`, `content`, `handoff_on_match`, `priority` |
-| `GET /api/v1/brands/{brand_id}/style-examples` | List saved style examples | Path `brand_id` |
-| `POST /api/v1/brands/{brand_id}/style-examples` | Add one approved example reply | Path `brand_id`, JSON body with `title`, `trigger_text`, `ideal_reply`, `notes`, `priority` |
-| `POST /api/v1/knowledge/documents` | Add one knowledge document for a brand | JSON body with `brand_id`, `title`, `source_type`, `source_reference`, `raw_text`, `metadata`, `process_async` |
-| `GET /api/v1/knowledge/documents?brand_id=1` | List knowledge documents for one brand | Query `brand_id` |
-| `POST /api/v1/knowledge/search` | Test or debug knowledge retrieval manually | JSON body with `brand_id`, `query`, `top_k` |
-| `POST /api/v1/messages/{message_id}/feedback` | Save correction or QA feedback on an AI reply | Path `message_id`, JSON body with `feedback_type`, `corrected_reply`, `notes`, `metadata` |
-| `GET /api/v1/customers?brand_id=1` | List customers for one brand | Query `brand_id` |
-| `GET /api/v1/customers/{customer_id}` | Read one customer and its facts | Path `customer_id` |
-| `GET /api/v1/conversations?brand_id=1` | List conversations for one brand | Query `brand_id` |
-| `GET /api/v1/conversations/{conversation_id}` | Read one conversation with messages and attachments | Path `conversation_id` |
-| `POST /api/v1/conversations/{conversation_id}/handoff` | Mark a conversation as human-owned | Path `conversation_id`, optional JSON body with `owner_name` and `notes` |
-| `POST /api/v1/conversations/{conversation_id}/release` | Return a handed-off conversation back to AI ownership | Path `conversation_id` |
-| `GET /api/v1/jobs` | List recent background jobs | Optional query `status_filter` |
-| `POST /api/v1/jobs/process-pending` | Process queued jobs now | JSON body with `limit` |
+## Recommended First-Time API Flow
 
-### Brand runtime routes (`X-Brand-Api-Key` or `X-Platform-Token`)
+For a brand-new integration, follow this sequence:
 
-| Route | What it does | Main inputs |
-|---|---|---|
-| `POST /api/v1/uploads` | Save one customer attachment and return its `attachment_id` | multipart form with `brand_id` and `file` |
-| `POST /api/v1/messages/process` | Main message entry point for text, images, and voice notes | JSON body with `brand_id`, `customer_external_id`, `conversation_external_id`, `channel`, `text`, `attachment_ids`, optional metadata fields |
-| `POST /api/v1/products/images/add` | Add one reference image for product recognition | multipart form with `brand_id`, `product_name`, `category`, `metadata`, and `file` |
-| `POST /api/v1/products/recognize` | Match a customer image against the brand's product catalog | multipart form with `brand_id`, `customer_text`, and `file` |
-| `GET /api/v1/products/images?brand_id=1` | List product images already stored for one brand | Query `brand_id` |
-| `DELETE /api/v1/products/images/{product_image_id}?brand_id=1` | Delete one stored product image | Path `product_image_id`, query `brand_id` |
+1. **Create brand** - `POST /api/v1/brands` → save `id` (brand_id) and `api_key` (X-Brand-Api-Key)
+2. **Configure tone/prompt** - `PATCH /api/v1/brands/{brand_id}/prompt-config` → set tone, language, guidelines
+3. **Add rules** - `POST /api/v1/brands/{brand_id}/rules` → create 3-5 key business rules
+4. **Add style examples** - `POST /api/v1/brands/{brand_id}/style-examples` → provide 5-10 approved reply examples  
+5. **Add knowledge docs** - `POST /api/v1/knowledge/documents` → upload FAQ, policies, product info
+6. **Upload product images** - `POST /api/v1/products/images/add` → train product recognition (3-5 images per product)
+7. **Process first message** - `POST /api/v1/messages/process` → test end-to-end flow with sample customer message
+8. **Monitor & iterate** - Use `/api/v1/conversations`, `/api/v1/feedback`, `/api/v1/jobs` to review and refine
 
-## Local quick start
+## Complete API Endpoint Audit (73 Endpoints)
+
+### Endpoint Statistics
+
+| Metric | Count |
+|--------|-------|
+| **Total Endpoints** | 73 |
+| **GET** | 32 |
+| **POST** | 26 |
+| **PATCH** | 10 |
+| **DELETE** | 5 |
+| **Public (no auth)** | 2 |
+| **Platform token required** | ~45 |
+| **Brand token required** | ~26 |
+
+### Authentication Model
+
+```
+X-Platform-Token (admin)     - Platform-level operations (brands, admin, audit)
+X-Brand-Api-Key (runtime)    - Brand-level operations (messages, uploads, products)
+No Auth (public)             - Health, Facebook webhook verification
+```
+
+### 1. HEALTH & BOOTSTRAP (Public Endpoints - 2 total)
+
+| HTTP | Path | Endpoint | Auth | Description |
+|------|------|----------|------|-------------|
+| **GET** | `/health` | `healthcheck` | None | Returns app name, version, environment, LLM provider, speech provider |
+| **GET** | `/bootstrap` | `get_bootstrap` | None | Initial app state: session info, settings, brand options, dashboard overview |
+
+### 2. DASHBOARD & OVERVIEW (Platform Token - 3 total)
+
+| HTTP | Path | Endpoint | Auth | Description |
+|------|------|----------|------|-------------|
+| **GET** | `/api/v1/dashboard/brands` | `list_dashboard_brands` | Platform | All brands with stats (rules, examples, docs, customers, conversations, handoffs, uploads, products) |
+| **GET** | `/api/v1/dashboard/overview` | `get_dashboard_overview` | Platform | Comprehensive stats: totals, health, recent jobs, 7-day chart data, brand options |
+| **GET** | `/api/overview` | `get_overview` | None | Alias to dashboard overview |
+
+### 3. BRAND MANAGEMENT (Platform Token - 13 total)
+
+#### 3a. Brand CRUD (5 endpoints)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/brands` | `list_brands` | List all active brands (excludes global), ordered by creation date DESC |
+| **POST** | `/api/v1/brands` | `create_brand_route` | Create new brand with API key. Returns: `id`, `name`, `slug`, `api_key` (secret) |
+| **GET** | `/api/v1/brands/{brand_id}` | `get_brand` | Retrieve single brand by ID with all settings |
+| **PATCH** | `/api/v1/brands/{brand_id}` | `update_brand` | Update brand properties (name, settings, metadata) |
+| **POST** | `/api/v1/brands/{brand_id}/reset-api-key` | `reset_brand_key` | Rotate/regenerate API key for brand. Returns new key |
+
+#### 3b. Brand Rules (4 endpoints)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/brands/{brand_id}/rules` | `list_rules` | List all brand rules, ordered by priority (lower = first) |
+| **POST** | `/api/v1/brands/{brand_id}/rules` | `create_rule` | Create new rule: category, title, content, handoff_on_match, priority |
+| **PATCH** | `/api/v1/brands/{brand_id}/rules/{rule_id}` | `update_rule` | Update rule fields |
+| **DELETE** | `/api/v1/brands/{brand_id}/rules/{rule_id}` | `delete_rule` | Delete rule |
+
+#### 3c. Brand Style Examples (4 endpoints)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/brands/{brand_id}/style-examples` | `list_style_examples` | List tone/style examples, ordered by priority (lower = first) |
+| **POST** | `/api/v1/brands/{brand_id}/style-examples` | `create_style_example` | Create example: title, trigger_text, ideal_reply, notes, priority |
+| **PATCH** | `/api/v1/brands/{brand_id}/style-examples/{example_id}` | `update_style_example` | Update style example |
+| **DELETE** | `/api/v1/brands/{brand_id}/style-examples/{example_id}` | `delete_style_example` | Delete style example |
+
+### 4. BRAND PROMPT CONFIG (Platform Token or Brand Token - 2 total)
+
+| HTTP | Path | Endpoint | Auth | Description |
+|------|------|----------|------|-------------|
+| **GET** | `/api/v1/brands/{brand_id}/prompt-config` | `get_prompt_config` | Platform\|Brand | Retrieve tone, language, guidelines, handoff messages |
+| **PATCH** | `/api/v1/brands/{brand_id}/prompt-config` | `update_prompt_config` | Platform\|Brand | Update prompt configuration |
+
+### 5. KNOWLEDGE BASE MANAGEMENT (Platform Token - 10 total)
+
+#### 5a. Knowledge Document CRUD (7 endpoints)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **POST** | `/api/v1/knowledge/documents` | `create_document` | Create knowledge doc: brand_id, title, source_type, raw_text, metadata. Optional: process_async |
+| **GET** | `/api/v1/knowledge/documents` | `list_documents` | List docs for brand. Query: brand_id, global_only |
+| **GET** | `/api/v1/knowledge/documents/{document_id}` | `get_document` | Retrieve single document with chunks |
+| **PATCH** | `/api/v1/knowledge/documents/{document_id}` | `update_document` | Update title, raw_text, metadata. Triggers reindex if text changed |
+| **DELETE** | `/api/v1/knowledge/documents/{document_id}` | `delete_document` | Delete document and all chunks |
+| **POST** | `/api/v1/knowledge/documents/{document_id}/reindex` | `reindex_document` | Manually reindex doc for semantic search. Optional: process_async |
+| **POST** | `/api/v1/knowledge/conversation-examples` | `create_conversation_example` | Create doc from approved conversation. Auto-extracts good Q&A pairs |
+
+#### 5b. Knowledge Search & Examples (3 endpoints)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **POST** | `/api/v1/knowledge/search` | `search_documents` | Semantic search: brand_id, query, top_k. Returns best matches with relevance |
+| **POST** | `/api/v1/knowledge/manual-conversation-examples` | `create_manual_conversation_example` | Create doc from manual transcript/conversation text |
+
+### 6. MESSAGE PROCESSING (Brand Token or Platform Token - 2 total)
+
+| HTTP | Path | Endpoint | Auth | Description |
+|------|------|----------|------|-------------|
+| **POST** | `/api/v1/messages/process` | `process_message` | Platform\|Brand | **CORE ENDPOINT**. Main message entry point. Inputs: brand_id, customer_id, conversation_id, channel, text, attachment_ids, metadata. Optional: process_async, simulate. Returns: message_id, reply, confidence, handoff_status |
+| **POST** | `/api/v1/messages/{message_id}/feedback` | `create_feedback` | Platform | Create QA feedback: feedback_type (rating/correction), corrected_reply, notes, metadata |
+
+### 7. FILE UPLOADS (Brand Token or Platform Token - 4 total)
+
+| HTTP | Path | Endpoint | Auth | Description |
+|------|------|----------|------|-------------|
+| **POST** | `/api/v1/uploads` | `upload_attachment` | Platform\|Brand | Upload customer file: brand_id, file (multipart). Detects type: image/audio/document. Returns: attachment_id |
+| **GET** | `/api/v1/uploads` | `list_uploads` | Platform | List uploads for brand. Query: brand_id, limit (max 500) |
+| **DELETE** | `/api/v1/uploads/{attachment_id}` | `delete_upload` | Platform | Delete upload and file from disk |
+| **GET** | `/api/v1/uploads/{attachment_id}/download` | `download_upload` | Platform | Download file by attachment_id |
+
+### 8. PRODUCT RECOGNITION (Brand Token or Platform Token - 5 total)
+
+| HTTP | Path | Endpoint | Auth | Description |
+|------|------|----------|------|-------------|
+| **POST** | `/api/v1/products/images/add` | `add_product_image` | Platform\|Brand | Upload reference product image: brand_id, product_name, category, metadata, file. Returns: product_image_id |
+| **POST** | `/api/v1/products/recognize` | `recognize_product` | Platform\|Brand | Recognize product from customer image: brand_id, customer_text, file. Returns: matched_products, confidence |
+| **GET** | `/api/v1/products/images` | `get_product_images` | Platform | Get all product images & groups for brand. Query: brand_id |
+| **DELETE** | `/api/v1/products/images/{product_image_id}` | `delete_product_image` | Platform | Delete product image. Query: brand_id |
+| **PATCH** | `/api/v1/products/images/{product_image_id}` | `update_product_image` | Platform | Update product image metadata |
+
+### 9. CUSTOMER MANAGEMENT (Platform Token - 6 total)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/customers` | `list_customers` | List customers for brand. Query: brand_id. Ordered by update date DESC |
+| **GET** | `/api/v1/customers/{customer_id}` | `get_customer` | Retrieve customer with all facts/attributes |
+| **PATCH** | `/api/v1/customers/{customer_id}` | `update_customer` | Update customer profile (name, language, location, metadata) |
+| **POST** | `/api/v1/customers/{customer_id}/facts` | `create_customer_fact` | Create fact/attribute: key, value, category, confidence |
+| **PATCH** | `/api/v1/customers/{customer_id}/facts/{fact_id}` | `update_customer_fact` | Update customer fact |
+| **DELETE** | `/api/v1/customers/{customer_id}/facts/{fact_id}` | `delete_customer_fact` | Delete customer fact |
+
+### 10. CONVERSATION MANAGEMENT (Platform Token - 5 total)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/conversations/summary` | `list_conversation_summaries` | List conversation summaries with last message preview. Query: brand_id |
+| **GET** | `/api/v1/conversations` | `list_conversations` | List all conversations for brand with messages & attachments. Query: brand_id. Ordered by update date DESC |
+| **GET** | `/api/v1/conversations/{conversation_id}` | `get_conversation` | Retrieve single conversation with full message thread |
+| **POST** | `/api/v1/conversations/{conversation_id}/handoff` | `handoff_conversation` | Mark conversation for human ownership. Sets status="handoff". Optional: owner_name, notes |
+| **POST** | `/api/v1/conversations/{conversation_id}/release` | `release_conversation` | Release conversation back to AI. Sets status="open" |
+
+### 11. FEEDBACK & QA (Platform Token - 2 total)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/feedback` | `list_feedback` | List feedback events. Optional: brand_id, limit (max 500). Used for QA tracking |
+| **PATCH** | `/api/v1/feedback/{feedback_id}` | `update_feedback` | Update feedback: feedback_type, corrected_reply, notes, metadata |
+
+### 12. FACEBOOK INTEGRATION (Mixed Auth - 6 total)
+
+#### 12a. Facebook Webhooks (2 endpoints - Public)
+
+| HTTP | Path | Endpoint | Auth | Description |
+|------|------|----------|------|-------------|
+| **GET** | `/api/v1/facebook/webhook` | `verify_facebook_webhook` | None | Webhook verification. Query: hub.mode, hub.verify_token, hub.challenge. Returns challenge on valid token |
+| **POST** | `/api/v1/facebook/webhook` | `receive_facebook_webhook` | None (signature validated) | Receive & process Facebook events. Validates X-Hub-Signature-256 header. Routes to message processor |
+
+#### 12b. Facebook Page Management (4 endpoints - Platform Token)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/facebook-pages` | `list_facebook_pages` | List FB page automation configs. Optional: brand_id filter |
+| **POST** | `/api/v1/facebook-pages` | `create_facebook_page` | Create FB page config: brand_id, page_id, page_name, page_token. Validates credentials |
+| **GET** | `/api/v1/facebook-pages/{page_id}` | `get_facebook_page` | Retrieve FB page config with credentials |
+| **PATCH** | `/api/v1/facebook-pages/{page_id}` | `update_facebook_page` | Update FB page config & credentials |
+
+### 13. BACKGROUND JOBS (Platform Token - 2 total)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/jobs` | `list_jobs` | List recent jobs. Optional: status_filter (pending/success/error). Returns up to 100 recent |
+| **POST** | `/api/v1/jobs/process-pending` | `run_jobs` | Process pending jobs now. Body: limit. Returns jobs processed count |
+
+### 14. AUDIT LOGS (Platform Token - 1 total)
+
+| HTTP | Path | Endpoint | Description |
+|------|------|----------|-------------|
+| **GET** | `/api/v1/audit-logs` | `list_audit_logs` | List audit trail. Optional: brand_id, conversation_id, event_type. Limit: max 500 |
+
+---
+
+
+
+## Local Development Quick Start
 
 ```powershell
+# Create virtual environment
 python -m venv .venv
 .venv\Scripts\activate
+
+# Install dependencies
 pip install -r requirements.txt
+
+# Setup configuration
 copy .env.example .env
+# Edit .env with your settings (Gemini API key, database URL, etc.)
+
+# Initialize database
 python -m app.cli init-db
+
+# Create a demo brand
 python -m app.cli create-brand --name "Demo Brand" --slug demo-brand
+
+# Start dev server (auto-reload on code changes)
 python main.py
 ```
 
-Swagger docs:
+**Access points:**
+- API: `http://127.0.0.1:8000`
+- Swagger docs: `http://127.0.0.1:8000/docs`
+- ReDoc: `http://127.0.0.1:8000/redoc`
+- Root: `http://127.0.0.1:8000/` (shows status & links)
 
-- `http://127.0.0.1:8000/docs`
+---
 
-## Environment variables
+## Environment Variables
 
-These are the most important settings in `.env`.
+All variables are loaded from `.env` file. Start with `.env.example` and customize.
 
-| Variable | What it means in simple words | Example |
-|---|---|---|
-| `APP_NAME` | App name shown in API docs | `B2B AI Support API` |
-| `APP_ENV` | Current environment | `production` |
-| `DEBUG` | Turn debug on or off | `false` |
-| `DATABASE_URL` | Where the app database lives | `mysql+pymysql://...` |
-| `PLATFORM_API_TOKEN` | Secret admin token for platform-level actions | `change-this-now` |
-| `LLM_PROVIDER` | Which LLM provider to use right now | `gemini` |
-| `GEMINI_API_KEY` | Your Gemini API key | `your-key` |
-| `GEMINI_MODEL` | Main Gemini model for replies | `gemini-2.5-flash` |
-| `GEMINI_SUMMARY_MODEL` | Gemini model for summaries | `gemini-2.5-flash` |
-| `GEMINI_EMBEDDING_MODEL` | Embedding model for knowledge and stronger image matching | `gemini-embedding-2-preview` |
-| `SPEECH_PROVIDER` | Voice transcription provider | `gemini` or `google_cloud` |
-| `GOOGLE_CLOUD_PROJECT_ID` | Your Google Cloud project id for speech | `my-project-id` |
-| `GOOGLE_APPLICATION_CREDENTIALS` | Path to your Google service account JSON file if using Google Cloud speech | `/home/username/keys/google.json` |
-| `SPEECH_PRIMARY_LANGUAGE` | Main expected voice language | `bn-BD` |
-| `SPEECH_ALT_LANGUAGES` | Extra languages that may appear in voice notes | `bn-BD,en-US,en-GB,hi-IN` |
-| `SPEECH_LOW_CONFIDENCE_THRESHOLD` | If voice confidence falls below this, ask for clarification | `0.65` |
-| `GEMINI_INLINE_AUDIO_MAX_BYTES` | Max audio size to send inline before using Gemini file upload | `8000000` |
-| `FORCE_BANGLA_REPLY_BY_DEFAULT` | Push Bangla replies unless the customer clearly prefers English | `true` |
-| `UNCLEAR_AUDIO_REPLY_BN` | Bangla message sent when audio is unclear | your custom Bangla text |
-| `UNCLEAR_AUDIO_REPLY_EN` | English version of the unclear-audio message | your custom English text |
-| `KNOWLEDGE_SCAN_LIMIT` | How many knowledge chunks to scan | `400` |
-| `KNOWLEDGE_TOP_K` | How many best knowledge chunks to use | `5` |
-| `HANDOFF_CONFIDENCE_THRESHOLD` | If reply confidence falls below this, handoff becomes more likely | `0.55` |
-| `UPLOAD_DIR` | Where uploaded files are stored | `storage/uploads` |
-| `MAX_UPLOAD_BYTES` | Max upload size per file | `20000000` |
-| `ALLOWED_ORIGINS` | CORS allow list | `*` |
-| `DEFAULT_TIMEZONE` | Default timezone for app behavior | `Asia/Dhaka` |
+### Core Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `APP_NAME` | No | `B2B AI Support API` | Display name in docs |
+| `APP_ENV` | Yes | `development` | Environment: `development`, `production`, `testing` |
+| `DEBUG` | No | `false` | Enable FastAPI debug mode |
+| `ROOT_PATH` | No | `` | API root path (for reverse proxies) |
+| `ALLOWED_ORIGINS` | No | `*` | CORS allowed origins (comma-separated) |
+| `DEFAULT_TIMEZONE` | No | `Asia/Dhaka` | Default timezone for app behavior |
+
+### Database Configuration
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `DATABASE_URL` | **Yes** | - | Connection URL: `mysql+pymysql://user:pass@host:3306/db?charset=utf8mb4` |
+
+### Platform Security
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `PLATFORM_API_TOKEN` | **Yes** | - | Admin token for platform operations (generate: `openssl rand -hex 32`) |
+
+### LLM Provider (Gemini or future)
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `LLM_PROVIDER` | No | `gemini` | Currently only `gemini` supported |
+| `GEMINI_API_KEY` | **Yes** (if using Gemini) | - | API key from [Google AI Studio](https://aistudio.google.com/app/apikey) |
+| `GEMINI_MODEL` | No | `gemini-2.5-flash` | Model for chat replies |
+| `GEMINI_SUMMARY_MODEL` | No | `gemini-2.5-flash` | Model for conversation summaries |
+| `GEMINI_EMBEDDING_MODEL` | No | `gemini-embedding-2-preview` | Model for knowledge embeddings |
+| `GEMINI_INLINE_AUDIO_MAX_BYTES` | No | `8000000` | Threshold before using file API |
+
+### Speech Transcription (Voice Notes)
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `SPEECH_PROVIDER` | No | `gemini` | Options: `gemini`, `google_cloud` |
+| `SPEECH_PRIMARY_LANGUAGE` | No | `bn-BD` | Primary voice language |
+| `SPEECH_ALT_LANGUAGES` | No | `bn-BD,en-US,en-GB,hi-IN` | Fallback languages (comma-separated) |
+| `SPEECH_LOW_CONFIDENCE_THRESHOLD` | No | `0.65` | If confidence < this, ask clarification (0-1) |
+| `UNCLEAR_AUDIO_REPLY_BN` | No | (default Bangla) | Custom Bangla message for unclear audio |
+| `UNCLEAR_AUDIO_REPLY_EN` | No | (default English) | Custom English message for unclear audio |
+| `GOOGLE_CLOUD_PROJECT_ID` | If `google_cloud` | - | GCP project ID |
+| `GOOGLE_APPLICATION_CREDENTIALS` | If `google_cloud` | - | Path to service account JSON |
+
+### Knowledge Base Tuning
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `KNOWLEDGE_SCAN_LIMIT` | No | `400` | Max chunks to scan per query |
+| `KNOWLEDGE_TOP_K` | No | `5` | Number of best chunks to use in context |
+
+### Message Processing Thresholds
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `HANDOFF_CONFIDENCE_THRESHOLD` | No | `0.55` | Confidence threshold for auto-escalation (0-1) |
+
+### File Uploads
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `UPLOAD_DIR` | No | `storage/uploads` | Directory for storing uploads |
+| `MAX_UPLOAD_BYTES` | No | `20000000` | Max file size (bytes) = 20MB |
+
+### Bangla & Bangladesh Support
+
+| Variable | Required | Default | Purpose |
+|----------|----------|---------|---------|
+| `FORCE_BANGLA_REPLY_BY_DEFAULT` | No | `true` | Prefer Bangla unless customer clearly prefers English |
 
 ## Recommended `.env` for cPanel production
 

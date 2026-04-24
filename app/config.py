@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     gemini_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_MODEL")
     gemini_summary_model: str = Field(default="gemini-2.5-flash", alias="GEMINI_SUMMARY_MODEL")
     gemini_embedding_model: str = Field(default="gemini-embedding-2-preview", alias="GEMINI_EMBEDDING_MODEL")
+    groq_api_key: str = Field(default="", alias="GROQ_API_KEY")
+    groq_model: str = Field(default="llama-3.3-70b-versatile", alias="GROQ_MODEL")
     speech_provider: str = Field(default="gemini", alias="SPEECH_PROVIDER")
     google_cloud_project_id: str = Field(default="", alias="GOOGLE_CLOUD_PROJECT_ID")
     speech_primary_language: str = Field(default="bn-BD", alias="SPEECH_PRIMARY_LANGUAGE")
@@ -55,19 +57,20 @@ class Settings(BaseSettings):
 
     default_timezone: str = Field(default="Asia/Dhaka", alias="DEFAULT_TIMEZONE")
     mock_llm_enabled_without_key: bool = Field(default=True, alias="MOCK_LLM_ENABLED_WITHOUT_KEY")
+    facebook_credential_validation_enabled: bool = Field(
+        default=True,
+        alias="FACEBOOK_CREDENTIAL_VALIDATION_ENABLED",
+    )
 
     @field_validator("debug", mode="before")
     @classmethod
     def normalize_debug(cls, value: object) -> bool:
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-            if normalized in {"1", "true", "yes", "on", "debug", "development"}:
-                return True
-            if normalized in {"0", "false", "no", "off", "release", "production"}:
-                return False
-        return False
+        return cls._parse_bool(value, default=False)
+
+    @field_validator("mock_llm_enabled_without_key", "facebook_credential_validation_enabled", mode="before")
+    @classmethod
+    def normalize_boolean_settings(cls, value: object) -> bool:
+        return cls._parse_bool(value, default=True)
 
     @field_validator("root_path", mode="before")
     @classmethod
@@ -94,6 +97,18 @@ class Settings(BaseSettings):
     @property
     def speech_alt_language_list(self) -> list[str]:
         return [item.strip() for item in self.speech_alt_languages.split(",") if item.strip()]
+
+    @staticmethod
+    def _parse_bool(value: object, *, default: bool) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "debug", "development"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "release", "production"}:
+                return False
+        return default
 
 
 @lru_cache(maxsize=1)

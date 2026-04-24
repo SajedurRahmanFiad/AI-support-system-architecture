@@ -9,14 +9,17 @@ from fastapi.testclient import TestClient
 TINY_PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO3Zk3sAAAAASUVORK5CYII=")
 
 
-def build_client(tmp_path):
+def build_client(tmp_path, env: dict[str, str] | None = None):
     db_path = tmp_path / "test.db"
     os.environ["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"
     os.environ["UPLOAD_DIR"] = str((tmp_path / "uploads").as_posix())
     os.environ["PLATFORM_API_TOKEN"] = "test-platform-token"
+    os.environ["FACEBOOK_CREDENTIAL_VALIDATION_ENABLED"] = "false"
     os.environ["LLM_PROVIDER"] = "mock"
     os.environ["SPEECH_PROVIDER"] = "mock"
     os.environ.pop("GEMINI_API_KEY", None)
+    for key, value in (env or {}).items():
+        os.environ[key] = value
 
     for module_name in list(sys.modules):
         if module_name == "app" or module_name.startswith("app."):
@@ -325,6 +328,54 @@ def test_llm_error_handoff_does_not_lock_conversation_to_human(tmp_path):
         assert conversations.status_code == 200
         conversation = conversations.json()[0]
         assert conversation["owner_type"] == "ai"
+
+
+def test_llm_error_uses_knowledge_fallback_reply_when_available(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Demo 2c", "slug": "demo-2c"})
+        brand_json = brand.json()
+        api_key = brand_json["api_key"]
+
+        knowledge_doc = client.post(
+            "/api/v1/knowledge/documents",
+            headers=headers,
+            json={
+                "brand_id": brand_json["id"],
+                "title": "Delivery FAQ",
+                "source_type": "faq",
+                "raw_text": "We deliver anywhere inside Bangladesh. We do not deliver outside Bangladesh.",
+            },
+        )
+        assert knowledge_doc.status_code == 200
+
+        from app.services.llm.mock import MockLLMProvider
+
+        original = MockLLMProvider.generate_reply
+
+        def broken_generate_reply(self, brand, customer, history, incoming_text, knowledge, attachment_insights):
+            raise RuntimeError("503 UNAVAILABLE")
+
+        MockLLMProvider.generate_reply = broken_generate_reply
+        try:
+            reply = client.post(
+                "/api/v1/messages/process",
+                headers={"X-Brand-Api-Key": api_key},
+                json={
+                    "brand_id": brand_json["id"],
+                    "customer_external_id": "cust-llm-fallback",
+                    "conversation_external_id": "conv-llm-fallback",
+                    "text": "Do you deliver outside Bangladesh?",
+                },
+            )
+        finally:
+            MockLLMProvider.generate_reply = original
+
+        assert reply.status_code == 200
+        body = reply.json()
+        assert body["status"] == "send"
+        assert "outside Bangladesh" in body["reply_text"]
+        assert "knowledge-fallback" in body["flags"]
 
 
 def test_async_message_job(tmp_path):
