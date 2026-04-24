@@ -103,7 +103,7 @@ class ProductRecognizer:
         scored_candidates: list[dict[str, Any]] = []
         for product_img in product_images:
             metadata = product_img.product_metadata or {}
-            fingerprint_text = metadata.get("fingerprint_text") or self._build_reference_fingerprint(
+            fingerprint_text = self._build_reference_fingerprint(
                 product_name=product_img.product_name,
                 category=product_img.product_category,
                 summary=metadata.get("visual_summary", ""),
@@ -288,12 +288,26 @@ class ProductRecognizer:
             if value:
                 meta_bits.append(f"{key}: {value}")
         meta_text = "; ".join(meta_bits)
+        description = str(metadata.get("description") or "").strip()
+        sale_price = metadata.get("sale_price")
+        stock_value = metadata.get("in_stock")
+        if isinstance(stock_value, bool):
+            stock_text = "in stock" if stock_value else "out of stock"
+        elif stock_value in {"1", "true", "yes", 1}:
+            stock_text = "in stock"
+        elif stock_value in {"0", "false", "no", 0}:
+            stock_text = "out of stock"
+        else:
+            stock_text = ""
         return " | ".join(
             part
             for part in [
                 f"Product name: {product_name}",
                 f"Category: {category}",
                 f"Aliases: {alias_text}" if alias_text else "",
+                f"Description: {description}" if description else "",
+                f"Sale price: {sale_price} BDT" if sale_price not in (None, "", []) else "",
+                f"Stock: {stock_text}" if stock_text else "",
                 f"Visual summary: {summary}",
                 f"Visible text: {extracted_text}" if extracted_text else "",
                 f"Attributes: {meta_text}" if meta_text else "",

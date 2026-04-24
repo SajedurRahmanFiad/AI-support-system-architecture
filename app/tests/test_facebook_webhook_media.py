@@ -137,7 +137,7 @@ def test_facebook_webhook_downloads_audio_attachments_and_transcribes_them(tmp_p
 
         class FakeDownloadResponse:
             status_code = 200
-            headers = {"content-type": "audio/mpeg"}
+            headers = {"content-type": "video/mp4"}
             content = b"FAKEAUDIO123"
 
         def fake_post(url, params=None, json=None, timeout=None):
@@ -170,7 +170,7 @@ def test_facebook_webhook_downloads_audio_attachments_and_transcribes_them(tmp_p
                                     "attachments": [
                                         {
                                             "type": "audio",
-                                            "payload": {"url": "https://cdn.example.com/customer-audio.mp3"},
+                                            "payload": {"url": "https://cdn.example.com/customer-audio.mp4"},
                                         }
                                     ],
                                 },
@@ -196,6 +196,7 @@ def test_facebook_webhook_downloads_audio_attachments_and_transcribes_them(tmp_p
         outbound = conversation["messages"][1]
         assert len(inbound["attachments"]) == 1
         assert inbound["attachments"][0]["attachment_type"] == "audio"
+        assert inbound["attachments"][0]["mime_type"] == "video/mp4"
         assert inbound["attachments"][0]["transcript"] == "Mock audio transcript"
         assert "audio-transcribed" in (outbound["flags_json"] or [])
         assert outbound["external_message_id"] == "fb-mid-audio"

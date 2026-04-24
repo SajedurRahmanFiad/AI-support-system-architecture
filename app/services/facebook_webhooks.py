@@ -554,10 +554,11 @@ class FacebookWebhookService:
         mime_type = self._clean_content_type(response.headers.get("content-type")) or self._default_mime_type(attachment_type)
         filename = self._attachment_filename(source_url, mime_type, attachment_type, index)
         storage_path, stored_mime_type = save_upload_bytes(page.brand_id, filename, response.content, mime_type)
+        stored_attachment_type = attachment_type if attachment_type in {"audio", "image"} else detect_attachment_type(stored_mime_type, filename)
 
         row = models.Attachment(
             brand_id=page.brand_id,
-            attachment_type=detect_attachment_type(stored_mime_type, filename),
+            attachment_type=stored_attachment_type,
             mime_type=stored_mime_type,
             original_filename=filename,
             storage_path=storage_path,
@@ -629,6 +630,7 @@ class FacebookWebhookService:
             "audio/mp3": ".mp3",
             "audio/ogg": ".ogg",
             "audio/mp4": ".m4a",
+            "video/mp4": ".m4a",
             "audio/wav": ".wav",
         }
         return mapping.get(mime_type, ".bin")

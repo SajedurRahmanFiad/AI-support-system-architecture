@@ -13,7 +13,7 @@ from app.services import knowledge, memory, moderation
 from app.services.app_settings import get_main_system_prompt
 from app.services.billing import record_usage
 from app.services.brand_service import get_brand_or_404
-from app.services.llm.base import AttachmentInsight
+from app.services.llm.base import AttachmentInsight, ConversationTurn
 from app.services.llm.factory import build_llm_provider
 from app.services.speech import build_speech_provider, build_unclear_audio_reply
 from app.services.storage import read_file_bytes
@@ -115,7 +115,9 @@ class MessageProcessor:
                 )
             )
 
-        for candidate in self._search_products_by_text(brand.id, payload.text):
+        history = memory.fetch_recent_history(self.db, conversation.id)[:-1]
+        product_search_text = self._build_product_search_text(payload.text, history)
+        for candidate in self._search_products_by_text(brand.id, product_search_text):
             attachment_insights.append(
                 AttachmentInsight(
                     attachment_id=int(candidate.get("primary_image_id") or 0),
@@ -134,7 +136,6 @@ class MessageProcessor:
             hydrated_brand,
             system_prompt=get_main_system_prompt(self.db),
         )
-        history = memory.fetch_recent_history(self.db, conversation.id)[:-1]
         customer_snapshot = memory.build_customer_snapshot(customer)
         ad_id = self._extract_ad_id(payload.metadata) or self._extract_ad_id(conversation.metadata_json or {})
 
@@ -723,6 +724,13 @@ class MessageProcessor:
 
         recognizer = ProductRecognizer(self.db, brand_id)
         return recognizer.search_products_by_text(cleaned, limit=3)
+
+    def _build_product_search_text(self, customer_text: str, history: list[ConversationTurn]) -> str:
+        parts = [" ".join((customer_text or "").split()).strip()]
+        for turn in history[-6:]:
+            if turn.role == "customer":
+                parts.append(" ".join((turn.text or "").split()).strip())
+        return " ".join(part for part in parts if part).strip()
 
     def _build_product_fact_summary(self, product_match: dict) -> str:
         metadata = product_match.get("metadata") or {}

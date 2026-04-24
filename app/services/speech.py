@@ -220,6 +220,7 @@ class GeminiSpeechProvider(SpeechProvider):
             "audio/flac": ".flac",
             "audio/aiff": ".aiff",
             "audio/mp4": ".m4a",
+            "video/mp4": ".m4a",
         }
         return mapping.get(mime_type, ".bin")
 

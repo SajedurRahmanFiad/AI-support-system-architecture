@@ -126,6 +126,9 @@ def resolve_period_bounds(
         next_year = start_of_year.replace(year=start_of_year.year + 1)
         start_local = datetime.combine(start_of_year, time.min, tzinfo=tz)
         end_local = datetime.combine(next_year, time.min, tzinfo=tz)
+    elif normalized in {"all_time", "all-time", "all"}:
+        start_local = datetime(1970, 1, 1, tzinfo=tz)
+        end_local = datetime.combine(today + timedelta(days=1), time.min, tzinfo=tz)
     elif normalized == "custom_date":
         selected_date = _parse_date(custom_date) or today
         start_local = datetime.combine(selected_date, time.min, tzinfo=tz)

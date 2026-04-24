@@ -592,6 +592,53 @@ def test_message_flow_uses_product_match_for_knowledge(tmp_path):
         assert any(flag.startswith("product-match:Red Mug") for flag in body["flags"])
 
 
+def test_message_flow_uses_product_catalog_for_price_followups(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Doi Store", "slug": "doi-store"})
+        brand_json = brand.json()
+
+        add_image = client.post(
+            "/api/v1/products/images/add",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            files={"file": ("doi-maker.png", TINY_PNG, "image/png")},
+            data={
+                "brand_id": str(brand_json["id"]),
+                "product_name": "Samurai Doi Maker",
+                "category": "kitchen",
+                "metadata": '{"description":"Doi Maker for homemade yogurt.","sale_price":"850","in_stock":true,"aliases":["Doi Maker","Yogurt Maker"]}',
+            },
+        )
+        assert add_image.status_code == 200
+
+        first_reply = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            json={
+                "brand_id": brand_json["id"],
+                "customer_external_id": "doi-customer",
+                "conversation_external_id": "doi-conversation",
+                "text": "Do you have Doi Maker?",
+            },
+        )
+        assert first_reply.status_code == 200
+
+        followup = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            json={
+                "brand_id": brand_json["id"],
+                "customer_external_id": "doi-customer",
+                "conversation_external_id": "doi-conversation",
+                "text": "What is the price?",
+            },
+        )
+        assert followup.status_code == 200
+        body = followup.json()
+        assert body["status"] == "send"
+        assert "850" in body["reply_text"]
+
+
 def test_audio_attachment_transcription_flow(tmp_path):
     with build_client(tmp_path) as client:
         headers = {"X-Platform-Token": "test-platform-token"}
