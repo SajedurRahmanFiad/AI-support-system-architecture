@@ -8,6 +8,33 @@ from app.config import get_settings
 from app.services.llm.base import BrandContext, ConversationTurn, CustomerSnapshot, LLMProvider
 
 
+FACT_KEY_ALIASES = {
+    "address": "address",
+    "delivery_address": "address",
+    "shipping_address": "address",
+    "present_address": "address",
+    "current_address": "address",
+    "phone": "phone",
+    "phone_number": "phone",
+    "mobile": "phone",
+    "mobile_number": "phone",
+    "contact_number": "phone",
+    "contact_no": "phone",
+    "name": "display_name",
+    "customer_name": "display_name",
+    "full_name": "display_name",
+    "city": "city",
+    "location": "city",
+}
+
+
+def normalize_fact_key(raw_key: str) -> str:
+    cleaned = "_".join(str(raw_key or "").strip().lower().replace("-", " ").split())
+    if not cleaned:
+        return ""
+    return FACT_KEY_ALIASES.get(cleaned, cleaned)
+
+
 def build_brand_context(brand: models.Brand, *, system_prompt: str | None = None) -> BrandContext:
     rules = [
         {
@@ -86,17 +113,13 @@ def apply_customer_updates(db: Session, customer: models.Customer, updates: dict
         customer.city = updates["city"]
 
     for item in updates.get("facts") or []:
-        key = str(item.get("key", "")).strip()
+        key = normalize_fact_key(item.get("key", ""))
         value = str(item.get("value", "")).strip()
         if not key or not value:
             continue
-        existing = db.scalar(
-            select(models.CustomerFact).where(
-                models.CustomerFact.customer_id == customer.id,
-                models.CustomerFact.fact_key == key,
-            )
-        )
+        existing = next((fact for fact in customer.facts if normalize_fact_key(fact.fact_key) == key), None)
         if existing:
+            existing.fact_key = key
             existing.fact_value = value
             existing.confidence = float(item.get("confidence", existing.confidence))
             existing.source = item.get("source", existing.source)

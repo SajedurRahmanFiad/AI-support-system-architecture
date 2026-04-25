@@ -11,6 +11,7 @@ from app.api.schemas.customers import (
     CustomerOut,
     CustomerUpdate,
 )
+from app.services.memory import normalize_fact_key
 
 router = APIRouter(prefix="/v1/customers", dependencies=[Depends(require_platform_access)])
 
@@ -65,7 +66,7 @@ def create_customer_fact(customer_id: int, payload: CustomerFactCreate, db: DbSe
     row = models.CustomerFact(
         brand_id=customer.brand_id,
         customer_id=customer.id,
-        **payload.model_dump(),
+        **{**payload.model_dump(), "fact_key": normalize_fact_key(payload.fact_key)},
     )
     db.add(row)
     db.commit()
@@ -87,6 +88,8 @@ def update_customer_fact(
     if not fact or fact.customer_id != customer_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer fact not found.")
     for field, value in payload.model_dump(exclude_unset=True).items():
+        if field == "fact_key":
+            value = normalize_fact_key(value)
         setattr(fact, field, value)
     db.add(fact)
     db.commit()

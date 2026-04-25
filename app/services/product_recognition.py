@@ -272,6 +272,30 @@ class ProductRecognizer:
         self.db.commit()
         return True
 
+    def delete_product_group(self, product_image_id: int) -> bool:
+        product_img = self.db.get(models.ProductImage, product_image_id)
+        if not product_img or product_img.brand_id != self.brand_id:
+            return False
+
+        group_key = self._product_group_key(product_img.product_name, product_img.product_category)
+        removed = False
+        for item in list(
+            self.db.scalars(select(models.ProductImage).where(models.ProductImage.brand_id == self.brand_id))
+        ):
+            if self._product_group_key(item.product_name, item.product_category) != group_key:
+                continue
+            storage_path = Path(item.storage_path)
+            if not storage_path.is_absolute():
+                storage_path = get_settings().upload_path / storage_path
+            if storage_path.exists():
+                storage_path.unlink(missing_ok=True)
+            self.db.delete(item)
+            removed = True
+
+        if removed:
+            self.db.commit()
+        return removed
+
     def _build_reference_fingerprint(
         self,
         product_name: str,

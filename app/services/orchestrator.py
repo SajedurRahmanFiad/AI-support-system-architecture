@@ -106,6 +106,7 @@ class MessageProcessor:
 
         product_match = self._recognize_product_images(brand.id, attachments, payload.text)
         if product_match and product_match.get("matched"):
+            self._remember_product_match(conversation, product_match)
             attachment_insights.append(
                 AttachmentInsight(
                     attachment_id=product_match.get("product_image_id", 0),
@@ -116,7 +117,17 @@ class MessageProcessor:
             )
 
         history = memory.fetch_recent_history(self.db, conversation.id)[:-1]
-        product_search_text = self._build_product_search_text(payload.text, history)
+        remembered_product = self._get_last_product_context(conversation)
+        if remembered_product and not (product_match and product_match.get("matched")):
+            attachment_insights.append(
+                AttachmentInsight(
+                    attachment_id=int(remembered_product.get("product_image_id") or 0),
+                    attachment_type="product_context",
+                    summary=self._build_product_fact_summary(remembered_product),
+                    extracted_text=str((remembered_product.get("metadata") or {}).get("description") or "") or None,
+                )
+            )
+        product_search_text = self._build_product_search_text(payload.text, history, remembered_product)
         for candidate in self._search_products_by_text(brand.id, product_search_text):
             attachment_insights.append(
                 AttachmentInsight(
@@ -288,68 +299,87 @@ class MessageProcessor:
             used_sources: list[dict] = []
             token_usage: dict = {}
         else:
-            try:
-                decision = self.provider.generate_reply(
-                    brand=brand_context,
-                    customer=customer_snapshot,
-                    history=history,
-                    incoming_text=payload.text,
-                    knowledge=knowledge_hits,
-                    attachment_insights=attachment_insights,
-                )
-            except Exception as exc:
-                fallback_reply_text, fallback_sources = self._build_llm_failure_fallback_reply(knowledge_hits)
-                if fallback_reply_text:
-                    decision = None
-                    decision_status = "send"
-                    assign_human_owner = False
-                    confidence = max(self.settings.handoff_confidence_threshold, 0.56)
-                    handoff_reason = None
-                    customer_updates = {}
-                    flags = list(dict.fromkeys(risk.flags + ["llm-error", "knowledge-fallback"]))
-                    used_sources = fallback_sources
-                    token_usage = {}
-                    reply_text = fallback_reply_text
-                else:
-                    # If LLM fails and we do not have a strong knowledge-backed fallback, handoff.
-                    decision = None
-                    decision_status = "handoff"
-                    assign_human_owner = False
-                    confidence = 0.0
-                    handoff_reason = f"LLM service error: {exc}"
-                    customer_updates = {}
-                    flags = list(dict.fromkeys(risk.flags + ["llm-error"]))
-                    used_sources = []
-                    token_usage = {}
-                    reply_text = hydrated_brand.fallback_handoff_message
+            direct_product_reply = self._build_direct_product_reply(
+                brand_default_language=brand.default_language,
+                customer_language=customer.language,
+                customer_text=payload.text,
+                product_match=product_match,
+                remembered_product=remembered_product,
+            )
+            if direct_product_reply is not None:
+                decision = None
+                decision_status = "send"
+                assign_human_owner = False
+                confidence = direct_product_reply["confidence"]
+                handoff_reason = None
+                customer_updates = {}
+                flags = list(dict.fromkeys(risk.flags + ["product-direct-reply"]))
+                used_sources = [direct_product_reply["used_source"]]
+                token_usage = {}
+                reply_text = direct_product_reply["reply_text"]
             else:
-                decision_status = decision.status
-                assign_human_owner = decision_status == "handoff"
-                confidence = decision.confidence
-                handoff_reason = decision.handoff_reason
-                customer_updates = decision.customer_updates
-                flags = list(dict.fromkeys(risk.flags + decision.flags))
-                used_sources = [
-                    {
-                        "chunk_id": item.chunk_id,
-                        "document_id": item.document_id,
-                        "title": item.title,
-                        "score": item.score,
-                    }
-                    for item in knowledge_hits
-                    if not decision.used_knowledge_ids or item.chunk_id in decision.used_knowledge_ids
-                ]
-                token_usage = decision.token_usage
-
-                if decision_status != "handoff" and confidence < self.settings.handoff_confidence_threshold:
-                    decision_status = "handoff"
-                    assign_human_owner = False
-                    handoff_reason = handoff_reason or "Low confidence reply needs human review."
-
-                if decision_status == "handoff":
-                    reply_text = hydrated_brand.fallback_handoff_message
+                try:
+                    decision = self.provider.generate_reply(
+                        brand=brand_context,
+                        customer=customer_snapshot,
+                        history=history,
+                        incoming_text=payload.text,
+                        knowledge=knowledge_hits,
+                        attachment_insights=attachment_insights,
+                    )
+                except Exception as exc:
+                    fallback_reply_text, fallback_sources = self._build_llm_failure_fallback_reply(knowledge_hits)
+                    if fallback_reply_text:
+                        decision = None
+                        decision_status = "send"
+                        assign_human_owner = False
+                        confidence = max(self.settings.handoff_confidence_threshold, 0.56)
+                        handoff_reason = None
+                        customer_updates = {}
+                        flags = list(dict.fromkeys(risk.flags + ["llm-error", "knowledge-fallback"]))
+                        used_sources = fallback_sources
+                        token_usage = {}
+                        reply_text = fallback_reply_text
+                    else:
+                        # If LLM fails and we do not have a strong knowledge-backed fallback, handoff.
+                        decision = None
+                        decision_status = "handoff"
+                        assign_human_owner = False
+                        confidence = 0.0
+                        handoff_reason = f"LLM service error: {exc}"
+                        customer_updates = {}
+                        flags = list(dict.fromkeys(risk.flags + ["llm-error"]))
+                        used_sources = []
+                        token_usage = {}
+                        reply_text = hydrated_brand.fallback_handoff_message
                 else:
-                    reply_text = decision.reply_text.strip() or hydrated_brand.fallback_handoff_message
+                    decision_status = decision.status
+                    assign_human_owner = decision_status == "handoff"
+                    confidence = decision.confidence
+                    handoff_reason = decision.handoff_reason
+                    customer_updates = decision.customer_updates
+                    flags = list(dict.fromkeys(risk.flags + decision.flags))
+                    used_sources = [
+                        {
+                            "chunk_id": item.chunk_id,
+                            "document_id": item.document_id,
+                            "title": item.title,
+                            "score": item.score,
+                        }
+                        for item in knowledge_hits
+                        if not decision.used_knowledge_ids or item.chunk_id in decision.used_knowledge_ids
+                    ]
+                    token_usage = decision.token_usage
+
+                    if decision_status != "handoff" and confidence < self.settings.handoff_confidence_threshold:
+                        decision_status = "handoff"
+                        assign_human_owner = False
+                        handoff_reason = handoff_reason or "Low confidence reply needs human review."
+
+                    if decision_status == "handoff":
+                        reply_text = hydrated_brand.fallback_handoff_message
+                    else:
+                        reply_text = decision.reply_text.strip() or hydrated_brand.fallback_handoff_message
 
         if product_match and product_match.get("matched"):
             flags = list(dict.fromkeys(flags + [f"product-match:{product_match['product_name']}"]))
@@ -725,12 +755,122 @@ class MessageProcessor:
         recognizer = ProductRecognizer(self.db, brand_id)
         return recognizer.search_products_by_text(cleaned, limit=3)
 
-    def _build_product_search_text(self, customer_text: str, history: list[ConversationTurn]) -> str:
+    def _build_product_search_text(
+        self,
+        customer_text: str,
+        history: list[ConversationTurn],
+        remembered_product: dict | None = None,
+    ) -> str:
         parts = [" ".join((customer_text or "").split()).strip()]
         for turn in history[-6:]:
             if turn.role == "customer":
                 parts.append(" ".join((turn.text or "").split()).strip())
+        if remembered_product:
+            metadata = remembered_product.get("metadata") or {}
+            parts.append(str(remembered_product.get("product_name") or "").strip())
+            parts.extend(str(item).strip() for item in (metadata.get("aliases") or [])[:5] if str(item).strip())
+            parts.extend(
+                str(metadata.get(field) or "").strip()
+                for field in ("model", "sku", "variant")
+                if str(metadata.get(field) or "").strip()
+            )
         return " ".join(part for part in parts if part).strip()
+
+    def _remember_product_match(self, conversation: models.Conversation, product_match: dict) -> None:
+        metadata = dict(conversation.metadata_json or {})
+        metadata["last_product_match"] = {
+            "product_name": product_match.get("product_name"),
+            "category": product_match.get("category"),
+            "metadata": product_match.get("metadata") or {},
+            "product_image_id": product_match.get("product_image_id"),
+            "confidence": product_match.get("confidence"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        conversation.metadata_json = metadata
+        self.db.add(conversation)
+
+    def _get_last_product_context(self, conversation: models.Conversation) -> dict | None:
+        payload = (conversation.metadata_json or {}).get("last_product_match")
+        return payload if isinstance(payload, dict) else None
+
+    def _build_direct_product_reply(
+        self,
+        *,
+        brand_default_language: str | None,
+        customer_language: str | None,
+        customer_text: str,
+        product_match: dict | None,
+        remembered_product: dict | None,
+    ) -> dict | None:
+        candidate = product_match if product_match and product_match.get("matched") else remembered_product
+        if not candidate:
+            return None
+
+        normalized_text = " ".join((customer_text or "").strip().lower().split())
+        if not normalized_text and not (product_match and product_match.get("matched")):
+            return None
+
+        asks_stock = any(token in normalized_text for token in ("stock", "available", "availability", "in stock", "স্টক", "আছে", "পাব", "available?"))
+        asks_price = any(token in normalized_text for token in ("price", "cost", "rate", "price?", "দাম", "কত", "মূল্য", "price er"))
+        asks_product = any(token in normalized_text for token in ("this", "item", "product", "এটা", "এইটা", "পণ্য"))
+        if normalized_text and not (asks_stock or asks_price or asks_product):
+            return None
+
+        metadata = candidate.get("metadata") or {}
+        product_name = str(candidate.get("product_name") or "এই পণ্য").strip() or "এই পণ্য"
+        sale_price = metadata.get("sale_price")
+        stock_value = metadata.get("in_stock")
+        in_stock = None
+        if isinstance(stock_value, bool):
+            in_stock = stock_value
+        elif stock_value in {"1", "true", "yes", 1}:
+            in_stock = True
+        elif stock_value in {"0", "false", "no", 0}:
+            in_stock = False
+
+        language = (customer_language or brand_default_language or "").lower()
+        if language.startswith("bn"):
+            parts = [f"{product_name}"]
+            if in_stock is True:
+                parts.append("স্টকে আছে।")
+            elif in_stock is False:
+                parts.append("এখন স্টকে নেই।")
+            if sale_price not in (None, "", []):
+                parts.append(f"বিক্রয়মূল্য {sale_price} টাকা।")
+            description = str(metadata.get("description") or "").strip()
+            if not normalized_text and description:
+                parts.append(description)
+            reply_text = " ".join(parts).strip()
+        else:
+            parts = [product_name]
+            if in_stock is True:
+                parts.append("is in stock.")
+            elif in_stock is False:
+                parts.append("is currently out of stock.")
+            if sale_price not in (None, "", []):
+                parts.append(f"Sale price is {sale_price} BDT.")
+            description = str(metadata.get("description") or "").strip()
+            if not normalized_text and description:
+                parts.append(description)
+            reply_text = " ".join(parts).strip()
+
+        if not reply_text:
+            return None
+
+        return {
+            "reply_text": reply_text,
+            "confidence": max(
+                float((product_match or remembered_product or {}).get("confidence") or 0.0),
+                self.settings.handoff_confidence_threshold,
+            ),
+            "used_source": {
+                "type": "product_context",
+                "product_name": product_name,
+                "category": candidate.get("category"),
+                "confidence": candidate.get("confidence"),
+                "product_image_id": candidate.get("product_image_id"),
+            },
+        }
 
     def _build_product_fact_summary(self, product_match: dict) -> str:
         metadata = product_match.get("metadata") or {}

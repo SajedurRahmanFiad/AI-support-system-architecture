@@ -306,6 +306,21 @@ def test_dashboard_admin_routes(tmp_path):
         assert download_product.status_code == 200
         assert download_product.content == TINY_PNG
 
+        delete_product = client.delete(
+            f"/api/v1/products/groups/{product_image_id}",
+            headers=platform_headers,
+            params={"brand_id": brand_id},
+        )
+        assert delete_product.status_code == 200
+
+        products_after_delete = client.get(
+            "/api/v1/products/images",
+            headers=platform_headers,
+            params={"brand_id": brand_id},
+        )
+        assert products_after_delete.status_code == 200
+        assert products_after_delete.json()["group_count"] == 0
+
         delete_upload = client.delete(
             f"/api/v1/uploads/{attachment_id}",
             headers=platform_headers,

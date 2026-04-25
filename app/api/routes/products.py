@@ -186,6 +186,26 @@ def delete_product_image(
     return {"status": "Product image deleted"}
 
 
+@router.delete("/groups/{product_image_id}")
+def delete_product_group(
+    product_image_id: int,
+    brand_id: int,
+    db: Session = Depends(get_db),
+    brand_token: str | None = Security(brand_token_header),
+    platform_token: str | None = Security(platform_token_header),
+) -> dict[str, str]:
+    """Delete a product group and every image stored under it."""
+    require_brand_access(db, brand_id, brand_token, platform_token, get_settings().platform_api_token)
+
+    recognizer = ProductRecognizer(db, brand_id)
+    success = recognizer.delete_product_group(product_image_id)
+
+    if not success:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Product not found")
+
+    return {"status": "Product deleted"}
+
+
 @router.patch("/images/{product_image_id}")
 def update_product_image(
     product_image_id: int,

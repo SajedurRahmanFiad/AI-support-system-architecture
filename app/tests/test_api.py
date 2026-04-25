@@ -639,6 +639,72 @@ def test_message_flow_uses_product_catalog_for_price_followups(tmp_path):
         assert "850" in body["reply_text"]
 
 
+def test_image_match_is_remembered_for_stock_followups(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post(
+            "/api/v1/brands",
+            headers=headers,
+            json={"name": "Device Store", "slug": "device-store", "default_language": "en-US"},
+        )
+        brand_json = brand.json()
+
+        add_image = client.post(
+            "/api/v1/products/images/add",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            files={"file": ("mesh-nebulizer.png", TINY_PNG, "image/png")},
+            data={
+                "brand_id": str(brand_json["id"]),
+                "product_name": "Mesh Nebulizer 203",
+                "category": "medical",
+                "metadata": '{"description":"Portable mesh nebulizer.","sale_price":"850","in_stock":true,"model":"203"}',
+            },
+        )
+        assert add_image.status_code == 200
+
+        upload = client.post(
+            "/api/v1/uploads",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            files={"file": ("customer-photo.png", TINY_PNG, "image/png")},
+            data={"brand_id": str(brand_json["id"])},
+        )
+        assert upload.status_code == 200
+        attachment_id = upload.json()["attachment"]["id"]
+
+        first_reply = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            json={
+                "brand_id": brand_json["id"],
+                "customer_external_id": "mesh-customer",
+                "conversation_external_id": "mesh-conversation",
+                "text": "",
+                "attachment_ids": [attachment_id],
+            },
+        )
+        assert first_reply.status_code == 200
+        first_body = first_reply.json()
+        assert first_body["status"] == "send"
+        assert "Mesh Nebulizer 203" in (first_body["reply_text"] or "")
+
+        followup = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            json={
+                "brand_id": brand_json["id"],
+                "customer_external_id": "mesh-customer",
+                "conversation_external_id": "mesh-conversation",
+                "text": "Is it in stock?",
+            },
+        )
+        assert followup.status_code == 200
+        body = followup.json()
+        assert body["status"] == "send"
+        assert "Mesh Nebulizer 203" in (body["reply_text"] or "")
+        assert "in stock" in (body["reply_text"] or "").lower()
+        assert "850" in (body["reply_text"] or "")
+
+
 def test_audio_attachment_transcription_flow(tmp_path):
     with build_client(tmp_path) as client:
         headers = {"X-Platform-Token": "test-platform-token"}
