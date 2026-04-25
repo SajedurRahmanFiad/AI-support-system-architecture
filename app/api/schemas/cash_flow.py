@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class CashFlowPaymentCreate(BaseModel):
@@ -13,6 +13,8 @@ class CashFlowPaymentCreate(BaseModel):
 
 
 class CashFlowPaymentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     brand_id: int
     amount_bdt: float
@@ -52,4 +54,3 @@ class CashFlowOverviewOut(BaseModel):
     totals: CashFlowTotalsOut
     brands: list[CashFlowBrandSummaryOut]
     payments: list[CashFlowPaymentOut]
-
