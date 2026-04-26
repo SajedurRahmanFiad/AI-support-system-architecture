@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 
 from app import models
@@ -108,7 +108,13 @@ def create_manual_conversation_example(payload: KnowledgeManualConversationExamp
 
 
 @router.get("/documents", response_model=list[KnowledgeDocumentOut])
-def list_documents(db: DbSession, brand_id: int | None = None, global_only: bool = False) -> list[models.KnowledgeDocument]:
+def list_documents(
+    db: DbSession,
+    brand_id: int | None = None,
+    global_only: bool = False,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[models.KnowledgeDocument]:
     if global_only:
         global_brand = get_global_brand(db)
         if not global_brand:
@@ -118,6 +124,8 @@ def list_documents(db: DbSession, brand_id: int | None = None, global_only: bool
                 select(models.KnowledgeDocument)
                 .where(models.KnowledgeDocument.brand_id == global_brand.id)
                 .order_by(models.KnowledgeDocument.created_at.desc())
+                .offset(offset)
+                .limit(limit)
             )
         )
 
@@ -129,6 +137,8 @@ def list_documents(db: DbSession, brand_id: int | None = None, global_only: bool
             select(models.KnowledgeDocument)
             .where(models.KnowledgeDocument.brand_id == brand_id)
             .order_by(models.KnowledgeDocument.created_at.desc())
+            .offset(offset)
+            .limit(limit)
         )
     )
 

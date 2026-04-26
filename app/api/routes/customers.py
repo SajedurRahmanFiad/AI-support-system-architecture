@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -17,12 +17,19 @@ router = APIRouter(prefix="/v1/customers", dependencies=[Depends(require_platfor
 
 
 @router.get("", response_model=list[CustomerOut])
-def list_customers(brand_id: int, db: DbSession) -> list[models.Customer]:
+def list_customers(
+    brand_id: int,
+    db: DbSession,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[models.Customer]:
     return list(
         db.scalars(
             select(models.Customer)
             .where(models.Customer.brand_id == brand_id)
             .order_by(models.Customer.updated_at.desc())
+            .offset(offset)
+            .limit(limit)
         )
     )
 

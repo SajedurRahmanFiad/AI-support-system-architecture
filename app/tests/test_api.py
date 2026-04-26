@@ -15,6 +15,9 @@ def build_client(tmp_path, env: dict[str, str] | None = None):
     os.environ["UPLOAD_DIR"] = str((tmp_path / "uploads").as_posix())
     os.environ["PLATFORM_API_TOKEN"] = "test-platform-token"
     os.environ["FACEBOOK_CREDENTIAL_VALIDATION_ENABLED"] = "false"
+    os.environ["FACEBOOK_WEBHOOK_ASYNC_ENABLED"] = "false"
+    os.environ["FACEBOOK_MESSAGE_BATCHING_ENABLED"] = "false"
+    os.environ["MESSAGE_PROCESSING_ASYNC_DEFAULT"] = "false"
     os.environ["LLM_PROVIDER"] = "mock"
     os.environ["SPEECH_PROVIDER"] = "mock"
     os.environ.pop("GEMINI_API_KEY", None)
@@ -270,6 +273,61 @@ def test_sensitive_message_handoffs(tmp_path):
         body = reply.json()
         assert body["status"] == "handoff"
         assert body["handoff_reason"]
+
+
+def test_low_information_followup_reuses_previous_customer_context(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post(
+            "/api/v1/brands",
+            headers=headers,
+            json={"name": "Followup Brand", "slug": "followup-brand"},
+        )
+        assert brand.status_code == 200
+        brand_data = brand.json()
+
+        knowledge = client.post(
+            "/api/v1/knowledge/documents",
+            headers=headers,
+            json={
+                "brand_id": brand_data["id"],
+                "title": "Delivery FAQ",
+                "source_type": "faq",
+                "raw_text": "Dhaka delivery takes 1 day for confirmed orders.",
+            },
+        )
+        assert knowledge.status_code == 200
+
+        first = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_data["api_key"]},
+            json={
+                "brand_id": brand_data["id"],
+                "customer_external_id": "cust-followup",
+                "conversation_external_id": "conv-followup",
+                "external_message_id": "msg-followup-1",
+                "text": "How long does delivery take in Dhaka?",
+            },
+        )
+        assert first.status_code == 200
+        assert "Dhaka delivery takes 1 day" in first.json()["reply_text"]
+
+        second = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_data["api_key"]},
+            json={
+                "brand_id": brand_data["id"],
+                "customer_external_id": "cust-followup",
+                "conversation_external_id": "conv-followup",
+                "external_message_id": "msg-followup-2",
+                "text": ".",
+            },
+        )
+        assert second.status_code == 200
+        second_body = second.json()
+        assert second_body["status"] == "send"
+        assert "Dhaka delivery takes 1 day" in second_body["reply_text"]
+        assert "reply-context:previous-message" in second_body["flags"]
 
 
 def test_llm_error_handoff_does_not_lock_conversation_to_human(tmp_path):

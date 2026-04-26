@@ -21,7 +21,8 @@ def process_message(
     platform_token: str | None = Security(platform_token_header),
 ) -> MessageProcessResponse:
     require_brand_access(db, payload.brand_id, brand_token, platform_token, get_settings().platform_api_token)
-    if payload.process_async:
+    should_process_async = payload.process_async or get_settings().message_processing_async_default
+    if should_process_async:
         job = enqueue_job(db, "process_message", payload.model_dump(), payload.brand_id)
         return MessageProcessResponse(status="queued", job_id=job.id)
     return MessageProcessor(db).process(payload)

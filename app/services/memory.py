@@ -35,7 +35,13 @@ def normalize_fact_key(raw_key: str) -> str:
     return FACT_KEY_ALIASES.get(cleaned, cleaned)
 
 
-def build_brand_context(brand: models.Brand, *, system_prompt: str | None = None) -> BrandContext:
+def build_brand_context(
+    brand: models.Brand,
+    *,
+    system_prompt: str | None = None,
+    global_reply_config: dict[str, str] | None = None,
+) -> BrandContext:
+    reply_config = global_reply_config or {}
     rules = [
         {
             "category": item.category,
@@ -60,10 +66,10 @@ def build_brand_context(brand: models.Brand, *, system_prompt: str | None = None
         brand_id=brand.id,
         name=brand.name,
         default_language=brand.default_language,
-        tone_name=brand.tone_name,
-        tone_instructions=brand.tone_instructions,
+        tone_name=str(reply_config.get("tone_name") or brand.tone_name or "Helpful sales assistant"),
+        tone_instructions=str(reply_config.get("tone_instructions") or ""),
         fallback_handoff_message=brand.fallback_handoff_message,
-        public_reply_guidelines=brand.public_reply_guidelines,
+        public_reply_guidelines=str(reply_config.get("public_reply_guidelines") or ""),
         system_prompt=system_prompt,
         rules=rules,
         style_examples=style_examples,

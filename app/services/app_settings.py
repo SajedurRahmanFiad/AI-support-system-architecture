@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 from app import models
 
 MAIN_SYSTEM_PROMPT_KEY = "main_system_prompt"
+GLOBAL_REPLY_CONFIG_KEY = "global_reply_config"
 
 DEFAULT_MAIN_SYSTEM_PROMPT = (
     "You are the main AI operating layer for a Bangladesh-focused sales and customer support system. "
@@ -19,6 +20,12 @@ DEFAULT_MAIN_SYSTEM_PROMPT = (
     "or needs a human decision, choose handoff. If one short follow-up question is enough, choose clarify. "
     "Reply in natural Bangla used in Bangladesh unless the customer clearly prefers English."
 )
+
+DEFAULT_GLOBAL_REPLY_CONFIG = {
+    "tone_name": "Helpful sales assistant",
+    "tone_instructions": "",
+    "public_reply_guidelines": "",
+}
 
 
 def get_setting_record(db: Session, setting_key: str) -> models.AppSetting | None:
@@ -49,3 +56,12 @@ def get_main_system_prompt(db: Session) -> str:
     text = str(payload.get("text") or "").strip()
     return text or DEFAULT_MAIN_SYSTEM_PROMPT
 
+
+def get_global_reply_config(db: Session) -> dict[str, str]:
+    payload = get_setting_value(db, GLOBAL_REPLY_CONFIG_KEY, DEFAULT_GLOBAL_REPLY_CONFIG)
+    return {
+        "tone_name": str(payload.get("tone_name") or DEFAULT_GLOBAL_REPLY_CONFIG["tone_name"]).strip()
+        or DEFAULT_GLOBAL_REPLY_CONFIG["tone_name"],
+        "tone_instructions": str(payload.get("tone_instructions") or "").strip(),
+        "public_reply_guidelines": str(payload.get("public_reply_guidelines") or "").strip(),
+    }

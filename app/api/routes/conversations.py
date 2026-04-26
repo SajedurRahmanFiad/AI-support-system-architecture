@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
@@ -19,7 +19,12 @@ def _serialize_conversation(conversation: models.Conversation) -> ConversationOu
 
 
 @router.get("/summary", response_model=list[ConversationSummaryOut])
-def list_conversation_summaries(brand_id: int, db: DbSession) -> list[ConversationSummaryOut]:
+def list_conversation_summaries(
+    brand_id: int,
+    db: DbSession,
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> list[ConversationSummaryOut]:
     last_message_text = (
         select(models.Message.text)
         .where(models.Message.conversation_id == models.Conversation.id)
@@ -32,6 +37,8 @@ def list_conversation_summaries(brand_id: int, db: DbSession) -> list[Conversati
         .join(models.Customer, models.Customer.id == models.Conversation.customer_id)
         .where(models.Conversation.brand_id == brand_id)
         .order_by(models.Conversation.updated_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     rows = db.execute(statement).all()
     summaries: list[ConversationSummaryOut] = []
@@ -44,7 +51,12 @@ def list_conversation_summaries(brand_id: int, db: DbSession) -> list[Conversati
 
 
 @router.get("", response_model=list[ConversationOut])
-def list_conversations(brand_id: int, db: DbSession) -> list[models.Conversation]:
+def list_conversations(
+    brand_id: int,
+    db: DbSession,
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> list[models.Conversation]:
     statement = (
         select(models.Conversation)
         .options(
@@ -53,6 +65,8 @@ def list_conversations(brand_id: int, db: DbSession) -> list[models.Conversation
         )
         .where(models.Conversation.brand_id == brand_id)
         .order_by(models.Conversation.updated_at.desc())
+        .offset(offset)
+        .limit(limit)
     )
     return [_serialize_conversation(item) for item in db.execute(statement).unique().scalars().all()]
 

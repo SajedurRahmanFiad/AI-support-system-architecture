@@ -10,7 +10,7 @@ from app import models
 from app.api.schemas.messages import MessageProcessRequest, MessageProcessResponse
 from app.config import get_settings
 from app.services import knowledge, memory, moderation
-from app.services.app_settings import get_main_system_prompt
+from app.services.app_settings import get_global_reply_config, get_main_system_prompt
 from app.services.billing import record_usage
 from app.services.brand_service import get_brand_or_404
 from app.services.llm.base import AttachmentInsight, ConversationTurn
@@ -117,6 +117,11 @@ class MessageProcessor:
             )
 
         history = memory.fetch_recent_history(self.db, conversation.id)[:-1]
+        effective_customer_text, context_flags = self._resolve_effective_customer_text(
+            payload=payload,
+            conversation_id=conversation.id,
+            current_message_id=inbound_message.id,
+        )
         remembered_product = self._get_last_product_context(conversation)
         if remembered_product and not (product_match and product_match.get("matched")):
             attachment_insights.append(
@@ -127,7 +132,7 @@ class MessageProcessor:
                     extracted_text=str((remembered_product.get("metadata") or {}).get("description") or "") or None,
                 )
             )
-        product_search_text = self._build_product_search_text(payload.text, history, remembered_product)
+        product_search_text = self._build_product_search_text(effective_customer_text, history, remembered_product)
         for candidate in self._search_products_by_text(brand.id, product_search_text):
             attachment_insights.append(
                 AttachmentInsight(
@@ -143,15 +148,17 @@ class MessageProcessor:
             .options(joinedload(models.Brand.rules), joinedload(models.Brand.style_examples))
             .where(models.Brand.id == brand.id)
         ) or brand
+        global_reply_config = get_global_reply_config(self.db)
         brand_context = memory.build_brand_context(
             hydrated_brand,
             system_prompt=get_main_system_prompt(self.db),
+            global_reply_config=global_reply_config,
         )
         customer_snapshot = memory.build_customer_snapshot(customer)
         ad_id = self._extract_ad_id(payload.metadata) or self._extract_ad_id(conversation.metadata_json or {})
 
         moderation_text = " ".join(
-            [payload.text]
+            [effective_customer_text]
             + [item.summary for item in attachment_insights]
             + [item.transcript or "" for item in attachment_insights]
             + [item.translated_text or "" for item in attachment_insights]
@@ -163,7 +170,7 @@ class MessageProcessor:
             risk.reason = risk.reason or "Conversation is already assigned to a human."
             risk.flags.append("conversation-owned-by-human")
 
-        if unclear_audio and not payload.text.strip():
+        if unclear_audio and not effective_customer_text.strip():
             decision_status = "clarify"
             confidence = unclear_audio.analysis_confidence
             handoff_reason = unclear_audio.clarification_reason
@@ -258,7 +265,7 @@ class MessageProcessor:
             self.db,
             self.provider,
             brand.id,
-            moderation_text or payload.text,
+            moderation_text or effective_customer_text,
             ad_id=ad_id,
         )
 
@@ -272,7 +279,7 @@ class MessageProcessor:
                 self.db,
                 self.provider,
                 brand.id,
-                f"{product_name} {alias_text} {payload.text}".strip(),
+                f"{product_name} {alias_text} {effective_customer_text}".strip(),
                 ad_id=ad_id,
             )
             # Combine and deduplicate knowledge hits
@@ -302,7 +309,7 @@ class MessageProcessor:
             direct_product_reply = self._build_direct_product_reply(
                 brand_default_language=brand.default_language,
                 customer_language=customer.language,
-                customer_text=payload.text,
+                customer_text=effective_customer_text,
                 product_match=product_match,
                 remembered_product=remembered_product,
             )
@@ -323,7 +330,7 @@ class MessageProcessor:
                         brand=brand_context,
                         customer=customer_snapshot,
                         history=history,
-                        incoming_text=payload.text,
+                        incoming_text=effective_customer_text,
                         knowledge=knowledge_hits,
                         attachment_insights=attachment_insights,
                     )
@@ -405,6 +412,7 @@ class MessageProcessor:
                     }
                 )
                 break
+        flags = list(dict.fromkeys(flags + context_flags))
 
         inbound_message.status = "processed" if decision_status != "handoff" else "handoff"
         inbound_message.flags_json = flags
@@ -527,8 +535,10 @@ class MessageProcessor:
             )
         )
         if conversation:
-            merged_metadata = dict(conversation.metadata_json or {})
-            merged_metadata.update(payload.metadata)
+            merged_metadata = self._merge_metadata_dicts(
+                dict(conversation.metadata_json or {}),
+                dict(payload.metadata or {}),
+            )
             conversation.metadata_json = merged_metadata
             self.db.add(conversation)
             self.db.flush()
@@ -544,6 +554,157 @@ class MessageProcessor:
         self.db.add(conversation)
         self.db.flush()
         return conversation
+
+    def _resolve_effective_customer_text(
+        self,
+        *,
+        payload: MessageProcessRequest,
+        conversation_id: int,
+        current_message_id: int,
+    ) -> tuple[str, list[str]]:
+        raw_text = (payload.text or "").strip()
+        if not self._is_low_information_followup(raw_text):
+            return raw_text, []
+
+        reference_message = self._find_referenced_customer_message(
+            conversation_id=conversation_id,
+            current_message_id=current_message_id,
+            metadata=payload.metadata,
+        )
+        if reference_message is None:
+            return raw_text, []
+
+        reference_text = self._build_message_reference_text(reference_message)
+        if not reference_text:
+            return raw_text, []
+
+        if self._is_pure_marker_text(raw_text):
+            return reference_text, ["reply-context:previous-message"]
+
+        return (
+            f"{reference_text}\n\nCustomer follow-up marker: {raw_text}",
+            ["reply-context:previous-message"],
+        )
+
+    def _find_referenced_customer_message(
+        self,
+        *,
+        conversation_id: int,
+        current_message_id: int,
+        metadata: dict | None,
+    ) -> models.Message | None:
+        explicit_reference_id = self._extract_reply_target_mid(metadata)
+        if explicit_reference_id:
+            explicit_match = self.db.scalar(
+                select(models.Message)
+                .options(joinedload(models.Message.attachments))
+                .where(
+                    models.Message.conversation_id == conversation_id,
+                    models.Message.external_message_id == explicit_reference_id,
+                    models.Message.role == "customer",
+                )
+            )
+            if explicit_match is not None:
+                return explicit_match
+
+        recent_customer_messages = (
+            self.db.execute(
+                select(models.Message)
+                .options(joinedload(models.Message.attachments))
+                .where(
+                    models.Message.conversation_id == conversation_id,
+                    models.Message.role == "customer",
+                    models.Message.id < current_message_id,
+                )
+                .order_by(models.Message.id.desc())
+                .limit(8)
+            )
+            .unique()
+            .scalars()
+            .all()
+        )
+        for message in recent_customer_messages:
+            if self._build_message_reference_text(message):
+                return message
+        return None
+
+    def _build_message_reference_text(self, message: models.Message) -> str:
+        parts: list[str] = []
+        message_text = (message.text or "").strip()
+        if message_text and not self._is_low_information_followup(message_text):
+            parts.append(message_text)
+
+        attachment_parts: list[str] = []
+        for attachment in message.attachments:
+            metadata = attachment.metadata_json if isinstance(attachment.metadata_json, dict) else {}
+            summary = str(metadata.get("summary") or "").strip()
+            if summary:
+                attachment_parts.append(summary)
+                continue
+            if attachment.transcript:
+                attachment_parts.append(attachment.transcript.strip())
+                continue
+            if attachment.extracted_text:
+                attachment_parts.append(attachment.extracted_text.strip())
+                continue
+            attachment_parts.append(f"{attachment.attachment_type} attachment")
+
+        if attachment_parts:
+            parts.append("Referenced attachment context: " + " ".join(attachment_parts))
+
+        return "\n".join(part for part in parts if part).strip()
+
+    def _extract_reply_target_mid(self, metadata: dict | None) -> str | None:
+        payload = metadata if isinstance(metadata, dict) else {}
+        reply_to = payload.get("reply_to") if isinstance(payload.get("reply_to"), dict) else {}
+        message_payload = payload.get("message") if isinstance(payload.get("message"), dict) else {}
+        nested_reply_to = message_payload.get("reply_to") if isinstance(message_payload.get("reply_to"), dict) else {}
+        candidates = [
+            reply_to.get("mid"),
+            reply_to.get("message_id"),
+            nested_reply_to.get("mid"),
+            nested_reply_to.get("message_id"),
+        ]
+        for candidate in candidates:
+            cleaned = str(candidate or "").strip()
+            if cleaned:
+                return cleaned
+        return None
+
+    def _merge_metadata_dicts(self, existing: dict, incoming: dict) -> dict:
+        merged = dict(existing)
+        for key, value in incoming.items():
+            if isinstance(value, dict):
+                nested_existing = merged.get(key) if isinstance(merged.get(key), dict) else {}
+                if value:
+                    merged[key] = self._merge_metadata_dicts(dict(nested_existing), value)
+                elif key not in merged:
+                    merged[key] = {}
+                continue
+            if isinstance(value, list):
+                if value or key not in merged:
+                    merged[key] = value
+                continue
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            merged[key] = value
+        return merged
+
+    def _is_low_information_followup(self, text: str) -> bool:
+        normalized = " ".join((text or "").split()).strip()
+        if not normalized:
+            return False
+        if len(normalized) == 1:
+            return True
+        if all(not char.isalnum() for char in normalized):
+            return True
+        if len(normalized) <= 2 and normalized.isalpha():
+            return True
+        return False
+
+    def _is_pure_marker_text(self, text: str) -> bool:
+        normalized = " ".join((text or "").split()).strip()
+        return bool(normalized) and all(not char.isalnum() for char in normalized)
 
     def _build_llm_failure_fallback_reply(
         self,

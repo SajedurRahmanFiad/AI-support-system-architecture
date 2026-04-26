@@ -71,16 +71,41 @@ class Settings(BaseSettings):
         default=True,
         alias="FACEBOOK_CREDENTIAL_VALIDATION_ENABLED",
     )
+    facebook_webhook_async_enabled: bool = Field(default=False, alias="FACEBOOK_WEBHOOK_ASYNC_ENABLED")
+    facebook_message_batching_enabled: bool = Field(default=True, alias="FACEBOOK_MESSAGE_BATCHING_ENABLED")
+    facebook_message_batch_window_seconds: int = Field(default=5, alias="FACEBOOK_MESSAGE_BATCH_WINDOW_SECONDS")
+    db_pool_size: int = Field(default=20, alias="DB_POOL_SIZE")
+    db_max_overflow: int = Field(default=40, alias="DB_MAX_OVERFLOW")
+    db_pool_recycle: int = Field(default=1800, alias="DB_POOL_RECYCLE")
+    db_pool_timeout: int = Field(default=30, alias="DB_POOL_TIMEOUT")
+    message_processing_async_default: bool = Field(default=False, alias="MESSAGE_PROCESSING_ASYNC_DEFAULT")
+    job_runner_enabled: bool = Field(default=True, alias="JOB_RUNNER_ENABLED")
+    job_runner_poll_interval_seconds: float = Field(default=0.5, alias="JOB_RUNNER_POLL_INTERVAL_SECONDS")
+    job_runner_batch_size: int = Field(default=24, alias="JOB_RUNNER_BATCH_SIZE")
+    job_runner_max_concurrency: int = Field(default=6, alias="JOB_RUNNER_MAX_CONCURRENCY")
+    job_retry_limit: int = Field(default=3, alias="JOB_RETRY_LIMIT")
+    job_retry_delay_seconds: int = Field(default=5, alias="JOB_RETRY_DELAY_SECONDS")
 
     @field_validator("debug", mode="before")
     @classmethod
     def normalize_debug(cls, value: object) -> bool:
         return cls._parse_bool(value, default=False)
 
-    @field_validator("mock_llm_enabled_without_key", "facebook_credential_validation_enabled", mode="before")
+    @field_validator(
+        "mock_llm_enabled_without_key",
+        "facebook_credential_validation_enabled",
+        "job_runner_enabled",
+        "facebook_message_batching_enabled",
+        mode="before",
+    )
     @classmethod
     def normalize_boolean_settings(cls, value: object) -> bool:
         return cls._parse_bool(value, default=True)
+
+    @field_validator("message_processing_async_default", "facebook_webhook_async_enabled", mode="before")
+    @classmethod
+    def normalize_false_default_boolean_settings(cls, value: object) -> bool:
+        return cls._parse_bool(value, default=False)
 
     @field_validator("root_path", mode="before")
     @classmethod

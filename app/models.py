@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.types import TypeDecorator
 
@@ -184,7 +184,11 @@ class Conversation(Base, TimestampMixin):
     customer: Mapped[Customer] = relationship(back_populates="conversations")
     messages: Mapped[list[Message]] = relationship(back_populates="conversation", cascade="all, delete-orphan")
 
-    __table_args__ = (UniqueConstraint("brand_id", "external_conversation_id", name="uq_conversation_brand_external"),)
+    __table_args__ = (
+        UniqueConstraint("brand_id", "external_conversation_id", name="uq_conversation_brand_external"),
+        Index("ix_conversations_brand_updated_at", "brand_id", "updated_at"),
+        Index("ix_conversations_brand_last_message_at", "brand_id", "last_message_at"),
+    )
 
 
 class Message(Base, TimestampMixin):
@@ -207,6 +211,11 @@ class Message(Base, TimestampMixin):
 
     conversation: Mapped[Conversation] = relationship(back_populates="messages")
     attachments: Mapped[list[Attachment]] = relationship(back_populates="message", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index("ix_messages_conversation_created_at", "conversation_id", "created_at"),
+        Index("ix_messages_brand_created_at", "brand_id", "created_at"),
+    )
 
 
 class Attachment(Base, TimestampMixin):
@@ -257,6 +266,10 @@ class Job(Base, TimestampMixin):
     available_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     last_error: Mapped[str | None] = mapped_column(Text, default=None)
+
+    __table_args__ = (
+        Index("ix_jobs_status_available_created", "status", "available_at", "created_at"),
+    )
 
 
 class AuditLog(Base, TimestampMixin):
@@ -344,6 +357,11 @@ class UsageRecord(Base, TimestampMixin):
 
     brand: Mapped[Brand] = relationship(back_populates="usage_records")
 
+    __table_args__ = (
+        Index("ix_usage_records_brand_occurred_at", "brand_id", "occurred_at"),
+        Index("ix_usage_records_brand_usage_type_occurred_at", "brand_id", "usage_type", "occurred_at"),
+    )
+
 
 class BrandPayment(Base, TimestampMixin):
     __tablename__ = "brand_payments"
@@ -356,3 +374,7 @@ class BrandPayment(Base, TimestampMixin):
     metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONText, default=dict)
 
     brand: Mapped[Brand] = relationship(back_populates="payments")
+
+    __table_args__ = (
+        Index("ix_brand_payments_brand_paid_on", "brand_id", "paid_on"),
+    )

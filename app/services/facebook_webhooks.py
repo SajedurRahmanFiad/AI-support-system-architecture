@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
@@ -14,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from app import models
 from app.api.schemas.messages import MessageProcessRequest
+from app.config import get_settings
+from app.services.jobs import enqueue_job
 from app.services.orchestrator import MessageProcessor
 from app.services.storage import detect_attachment_type, save_upload_bytes
 
@@ -195,6 +198,7 @@ class FacebookMessengerClient:
 class FacebookWebhookService:
     def __init__(self, db: Session) -> None:
         self.db = db
+        self.settings = get_settings()
 
     def verify_subscription(self, mode: str, verify_token: str, challenge: str) -> str:
         normalized_mode = mode.strip().lower()
@@ -387,8 +391,25 @@ class FacebookWebhookService:
                 "raw_event": event,
             },
         )
+        if self._should_batch_messenger_messages():
+            job = self._enqueue_or_merge_messenger_job(page, request_payload)
+            detail = (
+                f"Queued Messenger event for page {page.page_id} as job {job.id}. "
+                "The reply will be generated after the short typing window closes."
+            )
+            return "processed", detail
+        if self.settings.facebook_webhook_async_enabled:
+            queued_payload = request_payload.model_copy(update={"process_async": True})
+            job = enqueue_job(self.db, "process_message", queued_payload.model_dump(), page.brand_id)
+            detail = (
+                f"Queued Messenger event for page {page.page_id} as job {job.id}. "
+                "The background runner will generate and deliver the reply."
+            )
+            return "processed", detail
+
         result = MessageProcessor(self.db).process(request_payload)
         delivery_state = self._deliver_messenger_reply(page=page, recipient_id=sender_id, result=result)
+        self._sync_pending_review_label_for_result(result)
         if delivery_state == "sent":
             detail = (
                 f"Processed Messenger event for page {page.page_id} into conversation "
@@ -457,6 +478,11 @@ class FacebookWebhookService:
                 "raw_change": change,
             },
         )
+        if self.settings.facebook_webhook_async_enabled:
+            queued_payload = request_payload.model_copy(update={"process_async": True})
+            job = enqueue_job(self.db, "process_message", queued_payload.model_dump(), page.brand_id)
+            return "processed", f"Queued comment event for page {page.page_id} as job {job.id}."
+
         result = MessageProcessor(self.db).process(request_payload)
         return "processed", f"Processed comment event for page {page.page_id} into conversation {result.conversation_id}."
 
@@ -474,6 +500,9 @@ class FacebookWebhookService:
         if isinstance(message, dict):
             message_text = self._clean_text(message.get("text"))
             metadata["message_mid"] = self._clean_text(message.get("mid"))
+            reply_to = message.get("reply_to") if isinstance(message.get("reply_to"), dict) else None
+            if reply_to:
+                metadata["reply_to"] = self._normalize_reply_target(reply_to)
             referral = self._extract_referral_metadata(message)
             if referral:
                 metadata["referral"] = referral
@@ -783,10 +812,169 @@ class FacebookWebhookService:
         ]
         return secrets
 
+    def _should_batch_messenger_messages(self) -> bool:
+        return self.settings.facebook_message_batching_enabled and self.settings.facebook_message_batch_window_seconds > 0
+
+    def _enqueue_or_merge_messenger_job(
+        self,
+        page: models.FacebookPageAutomation,
+        request_payload: MessageProcessRequest,
+    ) -> models.Job:
+        available_at = datetime.now(timezone.utc) + timedelta(seconds=self.settings.facebook_message_batch_window_seconds)
+        pending_job = self._find_pending_messenger_batch_job(page.brand_id, request_payload.conversation_external_id)
+        payload_dict = request_payload.model_dump()
+        payload_dict["process_async"] = True
+        payload_dict["metadata"] = self._build_batched_metadata(payload_dict)
+
+        if pending_job is None:
+            return enqueue_job(
+                self.db,
+                "process_message",
+                payload_dict,
+                page.brand_id,
+                available_at=available_at,
+            )
+
+        pending_payload = dict(pending_job.payload_json or {})
+        merged_payload = self._merge_batched_process_payload(pending_payload, payload_dict)
+        pending_job.payload_json = merged_payload
+        pending_job.available_at = available_at
+        pending_job.last_error = None
+        self.db.add(pending_job)
+        self.db.commit()
+        self.db.refresh(pending_job)
+        return pending_job
+
+    def _find_pending_messenger_batch_job(self, brand_id: int, conversation_external_id: str) -> models.Job | None:
+        candidate_jobs = list(
+            self.db.scalars(
+                select(models.Job)
+                .where(models.Job.brand_id == brand_id, models.Job.kind == "process_message", models.Job.status == "pending")
+                .order_by(models.Job.created_at.desc())
+            )
+        )
+        for job in candidate_jobs:
+            payload = job.payload_json or {}
+            if payload.get("channel") != "facebook_messenger":
+                continue
+            if str(payload.get("conversation_external_id") or "").strip() != conversation_external_id.strip():
+                continue
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            if not metadata.get("batching_window_seconds"):
+                continue
+            return job
+        return None
+
+    def _build_batched_metadata(self, payload: dict[str, Any]) -> dict[str, Any]:
+        metadata = dict(payload.get("metadata") or {})
+        first_text = str(payload.get("text") or "").strip()
+        message_mid = str(payload.get("external_message_id") or "").strip()
+        metadata.update(
+            {
+                "batched_messages": [
+                    {
+                        "external_message_id": message_mid,
+                        "text": first_text,
+                        "attachment_ids": list(payload.get("attachment_ids") or []),
+                        "timestamp": metadata.get("timestamp"),
+                    }
+                ],
+                "batched_external_message_ids": [message_mid] if message_mid else [],
+                "batching_window_seconds": self.settings.facebook_message_batch_window_seconds,
+            }
+        )
+        return metadata
+
+    def _merge_batched_process_payload(self, existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(existing)
+        existing_metadata = dict(existing.get("metadata") or {})
+        incoming_metadata = dict(incoming.get("metadata") or {})
+        existing_ids = [
+            str(item).strip()
+            for item in existing_metadata.get("batched_external_message_ids", [])
+            if str(item).strip()
+        ]
+        incoming_external_message_id = str(incoming.get("external_message_id") or "").strip()
+        if incoming_external_message_id and incoming_external_message_id in existing_ids:
+            return merged
+
+        existing_text = str(existing.get("text") or "").strip()
+        incoming_text = str(incoming.get("text") or "").strip()
+        if incoming_text:
+            merged["text"] = "\n".join(part for part in [existing_text, incoming_text] if part)
+
+        merged["attachment_ids"] = list(
+            dict.fromkeys([*(existing.get("attachment_ids") or []), *(incoming.get("attachment_ids") or [])])
+        )
+        merged["customer_name"] = incoming.get("customer_name") or existing.get("customer_name")
+        merged["customer_language"] = incoming.get("customer_language") or existing.get("customer_language")
+        merged["external_message_id"] = incoming.get("external_message_id") or existing.get("external_message_id")
+        merged["process_async"] = True
+
+        merged_messages = list(existing_metadata.get("batched_messages") or [])
+        merged_messages.append(
+            {
+                "external_message_id": incoming_external_message_id,
+                "text": incoming_text,
+                "attachment_ids": list(incoming.get("attachment_ids") or []),
+                "timestamp": incoming_metadata.get("timestamp"),
+            }
+        )
+        merged_metadata = self._merge_metadata(existing_metadata, incoming_metadata)
+        merged_metadata["batched_messages"] = merged_messages
+        merged_metadata["batched_external_message_ids"] = [
+            *existing_ids,
+            *([incoming_external_message_id] if incoming_external_message_id else []),
+        ]
+        merged_metadata["batching_window_seconds"] = self.settings.facebook_message_batch_window_seconds
+        merged["metadata"] = merged_metadata
+        return merged
+
+    def _merge_metadata(self, existing: dict[str, Any], incoming: dict[str, Any]) -> dict[str, Any]:
+        merged = dict(existing)
+        for key, value in incoming.items():
+            if isinstance(value, dict):
+                nested_existing = merged.get(key) if isinstance(merged.get(key), dict) else {}
+                if value:
+                    merged[key] = self._merge_metadata(dict(nested_existing), value)
+                elif key not in merged:
+                    merged[key] = {}
+                continue
+            if isinstance(value, list):
+                if value or key not in merged:
+                    merged[key] = value
+                continue
+            if value is None or (isinstance(value, str) and not value.strip()):
+                continue
+            merged[key] = value
+        return merged
+
+    def _normalize_reply_target(self, payload: dict[str, Any]) -> dict[str, Any]:
+        target = {
+            "mid": self._clean_text(payload.get("mid"))
+            or self._clean_text(payload.get("message_id"))
+            or self._clean_text(payload.get("reply_to_mid")),
+            "story": self._clean_text(payload.get("story")),
+        }
+        message = payload.get("message") if isinstance(payload.get("message"), dict) else None
+        if message:
+            target["mid"] = target.get("mid") or self._clean_text(message.get("mid"))
+            target["text"] = self._clean_text(message.get("text"))
+        return {key: value for key, value in target.items() if value}
+
     def _find_page(self, page_id: str) -> models.FacebookPageAutomation | None:
         return self.db.scalar(
             select(models.FacebookPageAutomation).where(models.FacebookPageAutomation.page_id == page_id)
         )
+
+    def _sync_pending_review_label_for_result(self, result: Any) -> None:
+        conversation_id = getattr(result, "conversation_id", None)
+        if not conversation_id:
+            return
+        conversation = self.db.get(models.Conversation, conversation_id)
+        if conversation is None:
+            return
+        sync_pending_review_label(self.db, conversation, getattr(result, "status", None) == "handoff")
 
     @staticmethod
     def _extract_actor_id(value: Any) -> str | None:
@@ -814,9 +1002,21 @@ def sync_pending_review_label(db: Session, conversation: models.Conversation, en
         return False
 
     client = FacebookMessengerClient(page.page_access_token)
-    label_id = client.ensure_custom_label(page.page_id, PENDING_REVIEW_LABEL_NAME)
-    if not label_id:
-        return False
+    known_labels = metadata.get("labels") if isinstance(metadata.get("labels"), dict) else {}
+    label_id = str(known_labels.get("pending_review") or "").strip() or None
+    if enabled:
+        label_id = client.ensure_custom_label(page.page_id, PENDING_REVIEW_LABEL_NAME)
+        if not label_id:
+            return False
+    elif not label_id:
+        for item in client.list_custom_labels(page.page_id):
+            if str(item.get("name") or "").strip().lower() == PENDING_REVIEW_LABEL_NAME.lower():
+                candidate = str(item.get("id") or "").strip()
+                if candidate:
+                    label_id = candidate
+                    break
+        if not label_id:
+            return False
 
     changed = client.associate_label(sender_id, label_id) if enabled else client.remove_label(sender_id, label_id)
     if changed:

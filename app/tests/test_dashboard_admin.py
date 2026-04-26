@@ -16,6 +16,23 @@ def test_dashboard_admin_routes(tmp_path):
         brand_id = brand_json["id"]
         brand_headers = {"X-Brand-Api-Key": brand_json["api_key"]}
 
+        app_settings = client.get("/api/v1/app-settings", headers=platform_headers)
+        assert app_settings.status_code == 200
+        assert app_settings.json()["tone_name"] == "Helpful sales assistant"
+
+        updated_app_settings = client.patch(
+            "/api/v1/app-settings",
+            headers=platform_headers,
+            json={
+                "main_system_prompt": "System prompt for every brand.",
+                "tone_name": "Global shared tone",
+                "tone_instructions": "Keep replies short and natural.",
+                "public_reply_guidelines": "Ask one follow-up question at a time.",
+            },
+        )
+        assert updated_app_settings.status_code == 200
+        assert updated_app_settings.json()["tone_name"] == "Global shared tone"
+
         rule = client.post(
             f"/api/v1/brands/{brand_id}/rules",
             headers=platform_headers,
