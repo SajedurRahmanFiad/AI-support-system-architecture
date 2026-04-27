@@ -21,6 +21,13 @@ _runner_lock = threading.Lock()
 _shared_runner: BackgroundJobRunner | None = None
 
 
+def _log_job_runner(message: str) -> None:
+    try:
+        print(message, flush=True)
+    except (BrokenPipeError, OSError):
+        return
+
+
 def enqueue_job(
     db: Session,
     kind: str,
@@ -57,7 +64,7 @@ def process_pending_jobs(db: Session, limit: int = 10, max_concurrency: int | No
             try:
                 processed_ids.append(future.result())
             except Exception as exc:  # noqa: BLE001
-                print(f"[job-runner] job={job_id} crashed: {exc}", flush=True)
+                _log_job_runner(f"[job-runner] job={job_id} crashed: {exc}")
                 processed_ids.append(job_id)
 
     refreshed_jobs: list[models.Job] = []
@@ -133,7 +140,7 @@ def _process_job(job_id: int) -> int:
             job.status = "completed"
             job.last_error = None
             job.available_at = None
-            print(f"[job-runner] job={job.id} kind={job.kind} status=completed", flush=True)
+            _log_job_runner(f"[job-runner] job={job.id} kind={job.kind} status=completed")
         except Exception as exc:  # noqa: BLE001
             db.rollback()
             job = db.get(models.Job, job_id) or job
@@ -146,9 +153,8 @@ def _process_job(job_id: int) -> int:
                 else datetime.now(timezone.utc)
             )
             job.status = "pending" if should_retry else "failed"
-            print(
-                f"[job-runner] job={job.id} kind={job.kind} status={job.status} attempts={job.attempts} error={exc}",
-                flush=True,
+            _log_job_runner(
+                f"[job-runner] job={job.id} kind={job.kind} status={job.status} attempts={job.attempts} error={exc}"
             )
         finally:
             job.locked_at = None
@@ -171,9 +177,8 @@ class BackgroundJobRunner:
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name="background-job-runner", daemon=True)
         self._thread.start()
-        print(
+        _log_job_runner(
             f"[job-runner] started poll={self.settings.job_runner_poll_interval_seconds}s batch={self.settings.job_runner_batch_size} concurrency={self.settings.job_runner_max_concurrency}",
-            flush=True,
         )
 
     def stop(self) -> None:
@@ -182,7 +187,7 @@ class BackgroundJobRunner:
         self._stop_event.set()
         self._thread.join(timeout=5)
         self._thread = None
-        print("[job-runner] stopped", flush=True)
+        _log_job_runner("[job-runner] stopped")
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
@@ -194,7 +199,7 @@ class BackgroundJobRunner:
                         max_concurrency=self.settings.job_runner_max_concurrency,
                     )
             except Exception as exc:  # noqa: BLE001
-                print(f"[job-runner] loop error: {exc}", flush=True)
+                _log_job_runner(f"[job-runner] loop error: {exc}")
 
             self._stop_event.wait(max(0.2, self.settings.job_runner_poll_interval_seconds))
 
