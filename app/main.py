@@ -11,19 +11,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.router import api_router
 from app.config import get_settings
 from app.database import init_db
-from app.services.jobs import BackgroundJobRunner
+from app.services.jobs import ensure_background_job_runner_started, stop_background_job_runner
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.upload_path.mkdir(parents=True, exist_ok=True)
-    runner = BackgroundJobRunner()
-    runner.start()
+    ensure_background_job_runner_started()
     try:
         yield
     finally:
-        runner.stop()
+        stop_background_job_runner()
 
 
 def create_app() -> FastAPI:

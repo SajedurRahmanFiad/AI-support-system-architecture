@@ -14,8 +14,11 @@ from app.config import get_settings
 from app.database import SessionLocal
 from app.services import knowledge
 from app.services.llm.factory import build_llm_provider
-from app.services.message_delivery import deliver_external_reply_if_needed
+from app.services.message_delivery import begin_facebook_typing_indicator, deliver_external_reply_if_needed
 from app.services.orchestrator import MessageProcessor
+
+_runner_lock = threading.Lock()
+_shared_runner: BackgroundJobRunner | None = None
 
 
 def enqueue_job(
@@ -106,8 +109,12 @@ def _process_job(job_id: int) -> int:
         try:
             if job.kind == "process_message":
                 payload = MessageProcessRequest.model_validate(job.payload_json or {})
-                result = MessageProcessor(db).process(payload)
-                delivery = deliver_external_reply_if_needed(db, payload, result)
+                typing_indicator = begin_facebook_typing_indicator(db, payload)
+                try:
+                    result = MessageProcessor(db).process(payload)
+                    delivery = deliver_external_reply_if_needed(db, payload, result)
+                finally:
+                    typing_indicator.stop()
                 job.result_json = {
                     **result.model_dump(),
                     "delivery": delivery,
@@ -161,6 +168,7 @@ class BackgroundJobRunner:
     def start(self) -> None:
         if not self.settings.job_runner_enabled or self._thread is not None:
             return
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name="background-job-runner", daemon=True)
         self._thread.start()
         print(
@@ -189,3 +197,20 @@ class BackgroundJobRunner:
                 print(f"[job-runner] loop error: {exc}", flush=True)
 
             self._stop_event.wait(max(0.2, self.settings.job_runner_poll_interval_seconds))
+
+
+def ensure_background_job_runner_started() -> BackgroundJobRunner:
+    global _shared_runner
+    with _runner_lock:
+        if _shared_runner is None:
+            _shared_runner = BackgroundJobRunner()
+        _shared_runner.start()
+        return _shared_runner
+
+
+def stop_background_job_runner() -> None:
+    global _shared_runner
+    with _runner_lock:
+        if _shared_runner is None:
+            return
+        _shared_runner.stop()

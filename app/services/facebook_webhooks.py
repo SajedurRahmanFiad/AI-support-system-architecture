@@ -17,6 +17,7 @@ from app import models
 from app.api.schemas.messages import MessageProcessRequest
 from app.config import get_settings
 from app.services.jobs import enqueue_job
+from app.services.message_delivery import begin_facebook_typing_indicator
 from app.services.orchestrator import MessageProcessor
 from app.services.storage import detect_attachment_type, save_upload_bytes
 
@@ -73,6 +74,28 @@ class FacebookMessengerClient:
 
         return payload
 
+    def send_sender_action(self, recipient_id: str, sender_action: str) -> bool:
+        cleaned_recipient_id = recipient_id.strip()
+        cleaned_action = sender_action.strip().lower()
+        if not self.page_access_token or not cleaned_recipient_id:
+            return False
+        if cleaned_action not in {"mark_seen", "typing_on", "typing_off"}:
+            return False
+
+        try:
+            response = httpx.post(
+                f"{self.graph_api_base_url}/me/messages",
+                params={"access_token": self.page_access_token},
+                json={
+                    "recipient": {"id": cleaned_recipient_id},
+                    "sender_action": cleaned_action,
+                },
+                timeout=self.timeout_seconds,
+            )
+        except httpx.HTTPError:
+            return False
+        return response.status_code < 400
+
     def get_user_profile(self, recipient_id: str) -> dict[str, Any] | None:
         cleaned_recipient_id = recipient_id.strip()
         if not self.page_access_token or not cleaned_recipient_id:
@@ -103,7 +126,8 @@ class FacebookMessengerClient:
 
         existing = self.list_custom_labels(page_id)
         for item in existing:
-            if str(item.get("name") or "").strip().lower() == normalized_name.lower():
+            label_value = str(item.get("page_label_name") or item.get("name") or "").strip()
+            if label_value.lower() == normalized_name.lower():
                 label_id = str(item.get("id") or "").strip()
                 if label_id:
                     return label_id
@@ -112,7 +136,7 @@ class FacebookMessengerClient:
             response = httpx.post(
                 f"{self.graph_api_base_url}/{page_id}/custom_labels",
                 params={"access_token": self.page_access_token},
-                data={"name": normalized_name},
+                data={"page_label_name": normalized_name},
                 timeout=self.timeout_seconds,
             )
         except httpx.HTTPError:
@@ -133,7 +157,7 @@ class FacebookMessengerClient:
         try:
             response = httpx.get(
                 f"{self.graph_api_base_url}/{page_id}/custom_labels",
-                params={"access_token": self.page_access_token},
+                params={"access_token": self.page_access_token, "fields": "id,page_label_name"},
                 timeout=self.timeout_seconds,
             )
         except httpx.HTTPError:
@@ -407,9 +431,13 @@ class FacebookWebhookService:
             )
             return "processed", detail
 
-        result = MessageProcessor(self.db).process(request_payload)
-        delivery_state = self._deliver_messenger_reply(page=page, recipient_id=sender_id, result=result)
-        self._sync_pending_review_label_for_result(result)
+        typing_indicator = begin_facebook_typing_indicator(self.db, request_payload)
+        try:
+            result = MessageProcessor(self.db).process(request_payload)
+            delivery_state = self._deliver_messenger_reply(page=page, recipient_id=sender_id, result=result)
+            self._sync_pending_review_label_for_result(result)
+        finally:
+            typing_indicator.stop()
         if delivery_state == "sent":
             detail = (
                 f"Processed Messenger event for page {page.page_id} into conversation "
@@ -813,7 +841,11 @@ class FacebookWebhookService:
         return secrets
 
     def _should_batch_messenger_messages(self) -> bool:
-        return self.settings.facebook_message_batching_enabled and self.settings.facebook_message_batch_window_seconds > 0
+        return (
+            self.settings.facebook_webhook_async_enabled
+            and self.settings.facebook_message_batching_enabled
+            and self.settings.facebook_message_batch_window_seconds > 0
+        )
 
     def _enqueue_or_merge_messenger_job(
         self,
@@ -1010,7 +1042,8 @@ def sync_pending_review_label(db: Session, conversation: models.Conversation, en
             return False
     elif not label_id:
         for item in client.list_custom_labels(page.page_id):
-            if str(item.get("name") or "").strip().lower() == PENDING_REVIEW_LABEL_NAME.lower():
+            label_value = str(item.get("page_label_name") or item.get("name") or "").strip()
+            if label_value.lower() == PENDING_REVIEW_LABEL_NAME.lower():
                 candidate = str(item.get("id") or "").strip()
                 if candidate:
                     label_id = candidate

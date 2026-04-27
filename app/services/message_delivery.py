@@ -1,11 +1,29 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from fastapi import HTTPException, status
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from app import models
 from app.api.schemas.messages import MessageProcessRequest, MessageProcessResponse
+
+
+@dataclass
+class FacebookTypingIndicatorSession:
+    client: object | None = None
+    recipient_id: str | None = None
+    active: bool = False
+
+    def stop(self) -> None:
+        if not self.active or self.client is None or not self.recipient_id:
+            return
+        self.active = False
+        try:
+            self.client.send_sender_action(self.recipient_id, "typing_off")
+        except Exception:  # noqa: BLE001
+            return
 
 
 def deliver_external_reply_if_needed(
@@ -16,16 +34,13 @@ def deliver_external_reply_if_needed(
     if payload.channel != "facebook_messenger":
         return {"status": "skipped", "provider_message_id": None, "pending_review_label": None}
 
-    metadata = payload.metadata or {}
-    page_id = str(metadata.get("page_id") or "").strip()
-    recipient_id = str(metadata.get("sender_id") or payload.customer_external_id or "").strip()
+    page_id, recipient_id, page = _resolve_facebook_messenger_target(db, payload)
     if not page_id or not recipient_id:
         label_state = _sync_pending_review_label_for_result(db, result)
         return {"status": "skipped", "provider_message_id": None, "pending_review_label": label_state}
 
     from app.services.facebook_webhooks import FacebookMessengerClient, FacebookMessengerDeliveryError
 
-    page = db.scalar(select(models.FacebookPageAutomation).where(models.FacebookPageAutomation.page_id == page_id))
     if page is None or not page.page_access_token:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -91,6 +106,24 @@ def deliver_external_reply_if_needed(
     return {"status": "sent", "provider_message_id": sent_message_id, "pending_review_label": label_state}
 
 
+def begin_facebook_typing_indicator(
+    db: Session,
+    payload: MessageProcessRequest,
+) -> FacebookTypingIndicatorSession:
+    page_id, recipient_id, page = _resolve_facebook_messenger_target(db, payload)
+    if not page_id or not recipient_id or page is None or not page.page_access_token:
+        return FacebookTypingIndicatorSession()
+
+    from app.services.facebook_webhooks import FacebookMessengerClient
+
+    client = FacebookMessengerClient(page.page_access_token)
+    try:
+        active = client.send_sender_action(recipient_id, "typing_on")
+    except Exception:  # noqa: BLE001
+        active = False
+    return FacebookTypingIndicatorSession(client=client, recipient_id=recipient_id, active=active)
+
+
 def _sync_pending_review_label_for_result(db: Session, result: MessageProcessResponse) -> str | None:
     if not result.conversation_id:
         return None
@@ -106,3 +139,16 @@ def _sync_pending_review_label_for_result(db: Session, result: MessageProcessRes
     if changed:
         return "applied" if enabled else "removed"
     return "unchanged"
+
+
+def _resolve_facebook_messenger_target(
+    db: Session,
+    payload: MessageProcessRequest,
+) -> tuple[str | None, str | None, models.FacebookPageAutomation | None]:
+    metadata = payload.metadata or {}
+    page_id = str(metadata.get("page_id") or "").strip() or None
+    recipient_id = str(metadata.get("sender_id") or payload.customer_external_id or "").strip() or None
+    if not page_id:
+        return None, recipient_id, None
+    page = db.scalar(select(models.FacebookPageAutomation).where(models.FacebookPageAutomation.page_id == page_id))
+    return page_id, recipient_id, page

@@ -96,12 +96,13 @@ def test_facebook_webhook_processes_messenger_messages_into_conversations(tmp_pa
             def json(self):
                 return {"recipient_id": "psid-1", "message_id": "fb-mid-1"}
 
-        def fake_post(url, params=None, json=None, timeout=None):
+        def fake_post(url, params=None, json=None, data=None, timeout=None):
             calls.append(
                 {
                     "url": url,
                     "params": params,
                     "json": json,
+                    "data": data,
                     "timeout": timeout,
                 }
             )
@@ -137,12 +138,14 @@ def test_facebook_webhook_processes_messenger_messages_into_conversations(tmp_pa
         body = webhook.json()
         assert body["processed"] == 1
         assert body["errors"] == 0
-        assert len(calls) == 1
-        assert calls[0]["url"] == "https://graph.facebook.com/v25.0/me/messages"
-        assert calls[0]["params"] == {"access_token": "page-token-1"}
-        assert calls[0]["json"]["recipient"] == {"id": "psid-1"}
-        assert calls[0]["json"]["messaging_type"] == "RESPONSE"
-        assert "Dhaka delivery takes 1 day" in calls[0]["json"]["message"]["text"]
+        assert len(calls) == 3
+        assert calls[0]["json"] == {"recipient": {"id": "psid-1"}, "sender_action": "typing_on"}
+        assert calls[1]["url"] == "https://graph.facebook.com/v25.0/me/messages"
+        assert calls[1]["params"] == {"access_token": "page-token-1"}
+        assert calls[1]["json"]["recipient"] == {"id": "psid-1"}
+        assert calls[1]["json"]["messaging_type"] == "RESPONSE"
+        assert "Dhaka delivery takes 1 day" in calls[1]["json"]["message"]["text"]
+        assert calls[2]["json"] == {"recipient": {"id": "psid-1"}, "sender_action": "typing_off"}
 
         conversations = client.get(
             "/api/v1/conversations",
@@ -163,6 +166,7 @@ def test_facebook_webhook_batches_short_messenger_bursts_before_processing(tmp_p
     with build_client(
         tmp_path,
         env={
+            "FACEBOOK_WEBHOOK_ASYNC_ENABLED": "true",
             "FACEBOOK_MESSAGE_BATCHING_ENABLED": "true",
             "FACEBOOK_MESSAGE_BATCH_WINDOW_SECONDS": "1",
         },
@@ -178,12 +182,13 @@ def test_facebook_webhook_batches_short_messenger_bursts_before_processing(tmp_p
             def json(self):
                 return {"recipient_id": "psid-1", "message_id": "fb-batch-mid-1"}
 
-        def fake_post(url, params=None, json=None, timeout=None):
+        def fake_post(url, params=None, json=None, data=None, timeout=None):
             calls.append(
                 {
                     "url": url,
                     "params": params,
                     "json": json,
+                    "data": data,
                     "timeout": timeout,
                 }
             )
@@ -227,7 +232,10 @@ def test_facebook_webhook_batches_short_messenger_bursts_before_processing(tmp_p
         time.sleep(1.1)
         job_run = client.post("/api/v1/jobs/process-pending", headers=platform_headers, json={"limit": 10})
         assert job_run.status_code == 200
-        assert len(calls) == 1
+        assert len(calls) == 3
+        assert calls[0]["json"] == {"recipient": {"id": "psid-1"}, "sender_action": "typing_on"}
+        assert calls[1]["json"]["messaging_type"] == "RESPONSE"
+        assert calls[2]["json"] == {"recipient": {"id": "psid-1"}, "sender_action": "typing_off"}
 
         conversations = client.get(
             "/api/v1/conversations",
@@ -241,10 +249,90 @@ def test_facebook_webhook_batches_short_messenger_bursts_before_processing(tmp_p
         assert conversation["messages"][1]["external_message_id"] == "fb-batch-mid-1"
 
 
+def test_facebook_webhook_does_not_batch_when_async_delivery_is_disabled(tmp_path, monkeypatch):
+    with build_client(
+        tmp_path,
+        env={
+            "FACEBOOK_MESSAGE_BATCHING_ENABLED": "true",
+            "FACEBOOK_MESSAGE_BATCH_WINDOW_SECONDS": "5",
+            "FACEBOOK_WEBHOOK_ASYNC_ENABLED": "false",
+        },
+    ) as client:
+        from app.services import facebook_webhooks
+
+        calls = []
+
+        class FakeResponse:
+            status_code = 200
+            text = '{"recipient_id":"psid-1","message_id":"fb-sync-mid-1"}'
+
+            def json(self):
+                return {"recipient_id": "psid-1", "message_id": "fb-sync-mid-1"}
+
+        def fake_post(url, params=None, json=None, data=None, timeout=None):
+            calls.append(
+                {
+                    "url": url,
+                    "params": params,
+                    "json": json,
+                    "data": data,
+                    "timeout": timeout,
+                }
+            )
+            return FakeResponse()
+
+        monkeypatch.setattr(facebook_webhooks.httpx, "post", fake_post)
+        platform_headers, brand_json, _ = _create_brand_and_page(client)
+
+        webhook = client.post(
+            "/api/v1/facebook/webhook",
+            json={
+                "object": "page",
+                "entry": [
+                    {
+                        "id": "1234567890",
+                        "time": 1713900000,
+                        "messaging": [
+                            {
+                                "sender": {"id": "psid-1"},
+                                "recipient": {"id": "1234567890"},
+                                "timestamp": 1713900001,
+                                "message": {
+                                    "mid": "mid-sync-1",
+                                    "text": "How long does shipping take in Dhaka?",
+                                },
+                            }
+                        ],
+                    }
+                ],
+            },
+        )
+        assert webhook.status_code == 200
+        body = webhook.json()
+        assert body["processed"] == 1
+        assert body["errors"] == 0
+        assert len(calls) == 3
+
+        jobs = client.get("/api/v1/jobs?status_filter=pending", headers=platform_headers)
+        assert jobs.status_code == 200
+        assert jobs.json() == []
+
+        conversations = client.get(
+            "/api/v1/conversations",
+            headers=platform_headers,
+            params={"brand_id": brand_json["id"]},
+        )
+        assert conversations.status_code == 200
+        conversation = conversations.json()[0]
+        assert len(conversation["messages"]) == 2
+        assert conversation["messages"][1]["external_message_id"] == "fb-sync-mid-1"
+
+
 def test_facebook_webhook_batches_image_then_followup_text_and_preserves_ad_context(tmp_path, monkeypatch):
     with build_client(
         tmp_path,
         env={
+            "FACEBOOK_WEBHOOK_ASYNC_ENABLED": "true",
             "FACEBOOK_MESSAGE_BATCHING_ENABLED": "true",
             "FACEBOOK_MESSAGE_BATCH_WINDOW_SECONDS": "1",
         },
@@ -266,7 +354,7 @@ def test_facebook_webhook_batches_image_then_followup_text_and_preserves_ad_cont
             headers = {"content-type": "image/png"}
             content = b"PNGDATA"
 
-        def fake_post(url, params=None, json=None, timeout=None):
+        def fake_post(url, params=None, json=None, data=None, timeout=None):
             send_calls.append({"url": url, "params": params, "json": json, "timeout": timeout})
             return FakeSendResponse()
 
@@ -343,7 +431,7 @@ def test_facebook_webhook_batches_image_then_followup_text_and_preserves_ad_cont
         time.sleep(1.1)
         job_run = client.post("/api/v1/jobs/process-pending", headers=platform_headers, json={"limit": 10})
         assert job_run.status_code == 200
-        assert len(send_calls) == 1
+        assert len(send_calls) == 3
 
         conversations = client.get(
             "/api/v1/conversations",
@@ -370,8 +458,15 @@ def test_facebook_webhook_async_handoff_applies_pending_review_label(tmp_path, m
 
         label_calls = []
 
-        def fake_send_text_message(self, recipient_id: str, text: str):
-            return {"recipient_id": recipient_id, "message_id": "fb-handoff-1"}
+        class FakeSendResponse:
+            status_code = 200
+            text = '{"recipient_id":"psid-handoff","message_id":"fb-handoff-1"}'
+
+            def json(self):
+                return {"recipient_id": "psid-handoff", "message_id": "fb-handoff-1"}
+
+        def fake_post(url, params=None, json=None, data=None, timeout=None):
+            return FakeSendResponse()
 
         def fake_ensure_custom_label(self, page_id: str, label_name: str):
             return "label-pending-review"
@@ -380,7 +475,7 @@ def test_facebook_webhook_async_handoff_applies_pending_review_label(tmp_path, m
             label_calls.append((recipient_id, label_id))
             return True
 
-        monkeypatch.setattr(facebook_webhooks.FacebookMessengerClient, "send_text_message", fake_send_text_message)
+        monkeypatch.setattr(facebook_webhooks.httpx, "post", fake_post)
         monkeypatch.setattr(facebook_webhooks.FacebookMessengerClient, "ensure_custom_label", fake_ensure_custom_label)
         monkeypatch.setattr(facebook_webhooks.FacebookMessengerClient, "associate_label", fake_associate_label)
         platform_headers, brand_json, _ = _create_brand_and_page(client)
@@ -446,17 +541,20 @@ def test_facebook_webhook_retries_messenger_delivery_after_a_send_api_failure(tm
             def json(self):
                 return {"recipient_id": "psid-1", "message_id": "fb-mid-2"}
 
-        def fake_post(url, params=None, json=None, timeout=None):
+        def fake_post(url, params=None, json=None, data=None, timeout=None):
             calls.append(
                 {
                     "url": url,
                     "params": params,
                     "json": json,
+                    "data": data,
                     "timeout": timeout,
                 }
             )
-            if len(calls) == 1:
-                return FakeFailureResponse()
+            if isinstance(json, dict) and isinstance(json.get("message"), dict):
+                if len([item for item in calls if isinstance(item["json"], dict) and isinstance(item["json"].get("message"), dict)]) == 1:
+                    return FakeFailureResponse()
+                return FakeSuccessResponse()
             return FakeSuccessResponse()
 
         monkeypatch.setattr(facebook_webhooks.httpx, "post", fake_post)
@@ -486,13 +584,13 @@ def test_facebook_webhook_retries_messenger_delivery_after_a_send_api_failure(tm
         first_attempt = client.post("/api/v1/facebook/webhook", json=payload)
         assert first_attempt.status_code == 200
         assert first_attempt.json()["errors"] == 1
-        assert len(calls) == 1
+        assert len(calls) == 3
 
         second_attempt = client.post("/api/v1/facebook/webhook", json=payload)
         assert second_attempt.status_code == 200
         assert second_attempt.json()["processed"] == 1
         assert second_attempt.json()["errors"] == 0
-        assert len(calls) == 2
+        assert len(calls) == 6
 
         conversations = client.get(
             "/api/v1/conversations",
@@ -503,6 +601,49 @@ def test_facebook_webhook_retries_messenger_delivery_after_a_send_api_failure(tm
         conversation = conversations.json()[0]
         assert len(conversation["messages"]) == 2
         assert conversation["messages"][1]["external_message_id"] == "fb-mid-2"
+
+
+def test_facebook_messenger_client_uses_page_label_name_for_lookup_and_create(monkeypatch):
+    from app.services import facebook_webhooks
+
+    get_calls = []
+    post_calls = []
+
+    class FakeGetResponse:
+        def __init__(self, payload):
+            self.status_code = 200
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    class FakePostResponse:
+        status_code = 200
+
+        def json(self):
+            return {"id": "label-created"}
+
+    get_responses = [
+        FakeGetResponse({"data": [{"id": "label-existing", "page_label_name": "Pending Review"}]}),
+        FakeGetResponse({"data": []}),
+    ]
+
+    def fake_get(url, params=None, timeout=None):
+        get_calls.append({"url": url, "params": params, "timeout": timeout})
+        return get_responses.pop(0)
+
+    def fake_post(url, params=None, json=None, data=None, timeout=None):
+        post_calls.append({"url": url, "params": params, "json": json, "data": data, "timeout": timeout})
+        return FakePostResponse()
+
+    monkeypatch.setattr(facebook_webhooks.httpx, "get", fake_get)
+    monkeypatch.setattr(facebook_webhooks.httpx, "post", fake_post)
+
+    client = facebook_webhooks.FacebookMessengerClient("page-token-1")
+    assert client.ensure_custom_label("page-1", "Pending Review") == "label-existing"
+    assert client.ensure_custom_label("page-1", "VIP Lead") == "label-created"
+    assert get_calls[0]["params"] == {"access_token": "page-token-1", "fields": "id,page_label_name"}
+    assert post_calls[0]["data"] == {"page_label_name": "VIP Lead"}
 
 
 def test_facebook_webhook_processes_page_comment_events(tmp_path):
