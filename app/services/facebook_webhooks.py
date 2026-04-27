@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app import models
 from app.api.schemas.messages import MessageProcessRequest
 from app.config import get_settings
-from app.services.jobs import enqueue_job
+from app.services.jobs import enqueue_job, schedule_background_job_processing
 from app.services.message_delivery import begin_facebook_typing_indicator
 from app.services.orchestrator import MessageProcessor
 from app.services.storage import detect_attachment_type, save_upload_bytes
@@ -875,6 +875,7 @@ class FacebookWebhookService:
         self.db.add(pending_job)
         self.db.commit()
         self.db.refresh(pending_job)
+        schedule_background_job_processing(pending_job.available_at)
         return pending_job
 
     def _find_pending_messenger_batch_job(self, brand_id: int, conversation_external_id: str) -> models.Job | None:

@@ -3,8 +3,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 import os
+from pathlib import Path
+import subprocess
 import threading
 import time
+import sys
 
 from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
@@ -47,7 +50,53 @@ def enqueue_job(
     db.add(job)
     db.commit()
     db.refresh(job)
+    schedule_background_job_processing(job.available_at)
     return job
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _is_persistent_job_runner_environment() -> bool:
+    return os.environ.get("PERSIST_BACKGROUND_JOB_RUNNER", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def schedule_background_job_processing(available_at: datetime | None = None) -> None:
+    if not _is_persistent_job_runner_environment():
+        return
+
+    delay_seconds = 0.0
+    if available_at is not None:
+        normalized_available_at = (
+            available_at if available_at.tzinfo is not None else available_at.replace(tzinfo=timezone.utc)
+        )
+        delay_seconds = max(0.0, (normalized_available_at - datetime.now(timezone.utc)).total_seconds())
+
+    repo_root = _repo_root()
+    env = os.environ.copy()
+    existing_python_path = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = str(repo_root) if not existing_python_path else f"{repo_root}{os.pathsep}{existing_python_path}"
+    limit = max(1, get_settings().job_runner_batch_size)
+    launch_code = (
+        "import subprocess, sys, time; "
+        f"time.sleep({delay_seconds!r}); "
+        f"subprocess.run([sys.executable, '-m', 'app.cli', 'run-jobs', '--limit', '{limit}'], "
+        f"cwd={str(repo_root)!r}, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
+    )
+
+    try:
+        subprocess.Popen(
+            [sys.executable, "-c", launch_code],
+            cwd=repo_root,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log_job_runner(f"[job-runner] spawn error: {exc}")
 
 
 def process_pending_jobs(db: Session, limit: int = 10, max_concurrency: int | None = None) -> list[models.Job]:
@@ -162,6 +211,8 @@ def _process_job(job_id: int) -> int:
             db.add(job)
             db.commit()
             db.refresh(job)
+            if job.status == "pending":
+                schedule_background_job_processing(job.available_at)
 
     return job_id
 

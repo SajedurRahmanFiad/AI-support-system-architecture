@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
+
 from app.services import jobs
 
 
@@ -59,3 +62,22 @@ def test_stop_background_job_runner_respects_persistent_env(monkeypatch):
 
     assert sentinel.stop_called is False
     assert jobs._shared_runner is sentinel
+
+
+def test_schedule_background_job_processing_spawns_detached_worker(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_popen(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setenv("PERSIST_BACKGROUND_JOB_RUNNER", "1")
+    monkeypatch.setattr(jobs, "get_settings", lambda: SimpleNamespace(job_runner_batch_size=24))
+    monkeypatch.setattr(jobs.subprocess, "Popen", fake_popen)
+
+    jobs.schedule_background_job_processing(datetime.now(timezone.utc))
+
+    assert captured["args"][0][0] == jobs.sys.executable
+    assert captured["args"][0][1] == "-c"
+    assert captured["kwargs"]["start_new_session"] is True
