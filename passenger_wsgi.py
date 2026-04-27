@@ -62,6 +62,7 @@ def _build_headers(environ: dict[str, str]) -> dict[str, str]:
 
 
 def application(environ, start_response):
+    ensure_background_job_runner_started()
     original_method = environ.get("REQUEST_METHOD", "GET")
     method = "GET" if original_method == "HEAD" else original_method
     path = quote(environ.get("PATH_INFO", "/") or "/", safe="/%:@")
