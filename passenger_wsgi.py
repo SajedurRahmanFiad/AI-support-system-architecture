@@ -29,6 +29,7 @@ REPO_ROOT = _resolve_repo_root()
 os.chdir(REPO_ROOT)
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+os.environ.setdefault("PERSIST_BACKGROUND_JOB_RUNNER", "1")
 
 from app.main import app as asgi_app
 from app.services.jobs import ensure_background_job_runner_started

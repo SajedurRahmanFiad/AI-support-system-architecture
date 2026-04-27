@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+import os
 import threading
 import time
 
@@ -172,7 +173,9 @@ class BackgroundJobRunner:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
-        if not self.settings.job_runner_enabled or self._thread is not None:
+        if not self.settings.job_runner_enabled:
+            return
+        if self._thread is not None and self._thread.is_alive():
             return
         self._stop_event.clear()
         self._thread = threading.Thread(target=self._run, name="background-job-runner", daemon=True)
@@ -215,7 +218,10 @@ def ensure_background_job_runner_started() -> BackgroundJobRunner:
 
 def stop_background_job_runner() -> None:
     global _shared_runner
+    if os.environ.get("PERSIST_BACKGROUND_JOB_RUNNER", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
     with _runner_lock:
         if _shared_runner is None:
             return
         _shared_runner.stop()
+        _shared_runner = None
