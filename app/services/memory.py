@@ -42,6 +42,25 @@ def build_brand_context(
     global_reply_config: dict[str, str] | None = None,
 ) -> BrandContext:
     reply_config = global_reply_config or {}
+    global_tone_instructions = str(reply_config.get("tone_instructions") or "").strip()
+    brand_tone_instructions = str(brand.tone_instructions or "").strip()
+    global_public_reply_guidelines = str(reply_config.get("public_reply_guidelines") or "").strip()
+    brand_public_reply_guidelines = str(brand.public_reply_guidelines or "").strip()
+
+    def _merge_prompt_sections(*sections: str) -> str:
+        merged: list[str] = []
+        seen: set[str] = set()
+        for section in sections:
+            normalized = section.strip()
+            if not normalized:
+                continue
+            key = " ".join(normalized.split()).casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            merged.append(normalized)
+        return "\n\n".join(merged)
+
     rules = [
         {
             "category": item.category,
@@ -67,9 +86,9 @@ def build_brand_context(
         name=brand.name,
         default_language=brand.default_language,
         tone_name=str(reply_config.get("tone_name") or brand.tone_name or "Helpful sales assistant"),
-        tone_instructions=str(reply_config.get("tone_instructions") or ""),
+        tone_instructions=_merge_prompt_sections(global_tone_instructions, brand_tone_instructions),
         fallback_handoff_message=brand.fallback_handoff_message,
-        public_reply_guidelines=str(reply_config.get("public_reply_guidelines") or ""),
+        public_reply_guidelines=_merge_prompt_sections(global_public_reply_guidelines, brand_public_reply_guidelines),
         system_prompt=system_prompt,
         rules=rules,
         style_examples=style_examples,

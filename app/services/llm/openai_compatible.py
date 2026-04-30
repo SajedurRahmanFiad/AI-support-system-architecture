@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import base64
 import hashlib
 import json
@@ -337,7 +338,10 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             "Be accurate, concise, and human. Never invent business facts. "
             "If the message is risky, unclear, legal, refund-related, abusive, or needs approval, choose handoff. "
             "If you need one short follow-up question, choose clarify. "
+            "Reason carefully about message timing and sequence. Use the timestamps in the recent conversation to infer what happened first, what happened most recently, and whether the customer is referring to a very recent event. "
+            "When knowledge candidates directly answer the customer, prefer using them instead of asking a redundant question. "
             "Return JSON only with keys: status, reply_text, confidence, handoff_reason, customer_updates, flags, used_knowledge_ids, internal_notes.\n\n"
+            f"Current system time (UTC): {datetime.now(timezone.utc).isoformat()}\n"
             f"Brand name: {brand.name}\n"
             f"Preferred language: {brand.default_language}\n"
             f"Tone name: {brand.tone_name}\n"
@@ -358,7 +362,11 @@ class OpenAICompatibleLLMProvider(LLMProvider):
     def _format_history(self, history: list[ConversationTurn]) -> str:
         if not history:
             return "No previous messages."
-        return "\n".join(f"{turn.role}: {turn.text}" for turn in history[-12:])
+        lines: list[str] = []
+        for turn in history[-12:]:
+            timestamp = turn.created_at.isoformat() if turn.created_at else "unknown-time"
+            lines.append(f"[{timestamp}] {turn.role}: {turn.text}")
+        return "\n".join(lines)
 
     def _extract_json(self, text: str) -> dict[str, Any]:
         cleaned = text.strip()

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from app.config import get_settings
@@ -128,3 +129,21 @@ def test_gemini_generate_reply_retries_transient_errors(monkeypatch):
     assert decision.reply_text == "Recovered reply"
     assert mocked_generate.call_count == 2
     mocked_sleep.assert_called_once_with(1.0)
+
+
+def test_gemini_history_format_includes_timestamps(monkeypatch):
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    get_settings.cache_clear()
+    provider = GeminiLLMProvider()
+
+    history = [
+        ConversationTurn(
+            role="customer",
+            text="Order confirmed",
+            created_at=datetime(2026, 4, 26, 12, 0, tzinfo=timezone.utc),
+        )
+    ]
+
+    formatted = provider._format_history(history)
+
+    assert "[2026-04-26T12:00:00+00:00] customer: Order confirmed" in formatted

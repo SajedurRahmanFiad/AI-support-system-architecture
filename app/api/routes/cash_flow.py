@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import timezone
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import select
@@ -18,6 +19,12 @@ from app.services.billing import resolve_period_bounds
 from app.services.brand_service import GLOBAL_BRAND_SLUG
 
 router = APIRouter(prefix="/v1/cash-flow", dependencies=[Depends(require_platform_access)])
+
+
+def _coerce_utc(value):
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
 
 
 @router.get("/overview", response_model=CashFlowOverviewOut)
@@ -64,7 +71,9 @@ def get_cash_flow_overview(
 
     billed_by_brand = defaultdict(float)
     actual_cost_by_brand = defaultdict(float)
-    paid_by_brand = defaultdict(float)
+    period_paid_by_brand = defaultdict(float)
+    all_time_paid_by_brand = defaultdict(float)
+    all_time_billed_by_brand = defaultdict(float)
     message_units_by_brand = defaultdict(int)
     input_tokens_by_brand = defaultdict(int)
     output_tokens_by_brand = defaultdict(int)
@@ -76,9 +85,19 @@ def get_cash_flow_overview(
         input_tokens_by_brand[row.brand_id] += int(row.input_tokens or 0)
         output_tokens_by_brand[row.brand_id] += int(row.output_tokens or 0)
 
-    all_payments = list(db.scalars(payment_statement))
-    for payment in all_payments:
-        paid_by_brand[payment.brand_id] += float(payment.amount_bdt or 0.0)
+    all_usage_statement = select(models.UsageRecord)
+    if brand_ids:
+        all_usage_statement = all_usage_statement.where(models.UsageRecord.brand_id.in_(brand_ids))
+    for row in db.scalars(all_usage_statement):
+        all_time_billed_by_brand[row.brand_id] += float(row.billed_amount_bdt or 0.0)
+
+    for payment in payment_rows:
+        paid_at = _coerce_utc(payment.paid_on)
+        if start_at <= paid_at < end_at:
+            period_paid_by_brand[payment.brand_id] += float(payment.amount_bdt or 0.0)
+
+    for payment in db.scalars(payment_statement):
+        all_time_paid_by_brand[payment.brand_id] += float(payment.amount_bdt or 0.0)
 
     brand_summaries = [
         CashFlowBrandSummaryOut(
@@ -86,8 +105,15 @@ def get_cash_flow_overview(
             brand_name=brand.name,
             billed_amount_bdt=round(billed_by_brand.get(brand.id, 0.0), 6),
             actual_cost_bdt=round(actual_cost_by_brand.get(brand.id, 0.0), 6),
-            paid_amount_bdt=round(paid_by_brand.get(brand.id, 0.0), 6),
-            due_amount_bdt=round(billed_by_brand.get(brand.id, 0.0) - paid_by_brand.get(brand.id, 0.0), 6),
+            paid_amount_bdt=round(period_paid_by_brand.get(brand.id, 0.0), 6),
+            due_amount_bdt=round(
+                max(all_time_billed_by_brand.get(brand.id, 0.0) - all_time_paid_by_brand.get(brand.id, 0.0), 0.0),
+                6,
+            ),
+            credit_amount_bdt=round(
+                max(all_time_paid_by_brand.get(brand.id, 0.0) - all_time_billed_by_brand.get(brand.id, 0.0), 0.0),
+                6,
+            ),
             profit_bdt=round(billed_by_brand.get(brand.id, 0.0) - actual_cost_by_brand.get(brand.id, 0.0), 6),
             message_units=message_units_by_brand.get(brand.id, 0),
             input_tokens=input_tokens_by_brand.get(brand.id, 0),
@@ -101,6 +127,7 @@ def get_cash_flow_overview(
         actual_cost_bdt=round(sum(item.actual_cost_bdt for item in brand_summaries), 6),
         paid_amount_bdt=round(sum(item.paid_amount_bdt for item in brand_summaries), 6),
         due_amount_bdt=round(sum(item.due_amount_bdt for item in brand_summaries), 6),
+        credit_amount_bdt=round(sum(item.credit_amount_bdt for item in brand_summaries), 6),
         profit_bdt=round(sum(item.profit_bdt for item in brand_summaries), 6),
         message_units=sum(item.message_units for item in brand_summaries),
         input_tokens=sum(item.input_tokens for item in brand_summaries),
@@ -137,4 +164,3 @@ def create_cash_flow_payment(payload: CashFlowPaymentCreate, db: DbSession) -> C
     db.commit()
     db.refresh(row)
     return CashFlowPaymentOut.model_validate(row)
-

@@ -30,6 +30,7 @@ class CashFlowBrandSummaryOut(BaseModel):
     actual_cost_bdt: float = 0.0
     paid_amount_bdt: float = 0.0
     due_amount_bdt: float = 0.0
+    credit_amount_bdt: float = 0.0
     profit_bdt: float = 0.0
     message_units: int = 0
     input_tokens: int = 0
@@ -41,6 +42,7 @@ class CashFlowTotalsOut(BaseModel):
     actual_cost_bdt: float = 0.0
     paid_amount_bdt: float = 0.0
     due_amount_bdt: float = 0.0
+    credit_amount_bdt: float = 0.0
     profit_bdt: float = 0.0
     message_units: int = 0
     input_tokens: int = 0

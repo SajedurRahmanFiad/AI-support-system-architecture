@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+from datetime import datetime, timezone
 import os
 import sys
 
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 TINY_PNG = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO3Zk3sAAAAASUVORK5CYII=")
 
@@ -18,6 +20,7 @@ def build_client(tmp_path, env: dict[str, str] | None = None):
     os.environ["FACEBOOK_WEBHOOK_ASYNC_ENABLED"] = "false"
     os.environ["FACEBOOK_MESSAGE_BATCHING_ENABLED"] = "false"
     os.environ["MESSAGE_PROCESSING_ASYNC_DEFAULT"] = "false"
+    os.environ["JOB_RUNNER_ENABLED"] = "false"
     os.environ["LLM_PROVIDER"] = "mock"
     os.environ["SPEECH_PROVIDER"] = "mock"
     os.environ.pop("GEMINI_API_KEY", None)
@@ -460,6 +463,60 @@ def test_async_message_job(tmp_path):
         assert job_run.status_code == 200
         jobs = job_run.json()
         assert jobs[0]["status"] == "completed"
+
+
+def test_cash_flow_overview_separates_period_payments_from_current_due(tmp_path):
+    with build_client(tmp_path) as client:
+        headers = {"X-Platform-Token": "test-platform-token"}
+        brand = client.post("/api/v1/brands", headers=headers, json={"name": "Cash Flow Brand", "slug": "cash-flow-brand"})
+        assert brand.status_code == 200
+        brand_json = brand.json()
+
+        january_reply = client.post(
+            "/api/v1/messages/process",
+            headers={"X-Brand-Api-Key": brand_json["api_key"]},
+            json={
+                "brand_id": brand_json["id"],
+                "customer_external_id": "cash-1",
+                "conversation_external_id": "cash-conv-1",
+                "text": "Hello",
+            },
+        )
+        assert january_reply.status_code == 200
+
+        from app.database import SessionLocal
+        from app import models
+
+        with SessionLocal() as db:
+            usage_row = db.scalar(select(models.UsageRecord).order_by(models.UsageRecord.id.desc()))
+            assert usage_row is not None
+            usage_row.occurred_at = datetime(2026, 1, 10, tzinfo=timezone.utc)
+            usage_row.billed_amount_bdt = 11.0
+            usage_row.actual_cost_bdt = 4.0
+            db.add(usage_row)
+            db.add(
+                models.BrandPayment(
+                    brand_id=brand_json["id"],
+                    amount_bdt=5.0,
+                    paid_on=datetime(2026, 4, 25, tzinfo=timezone.utc),
+                    notes="Advance payment",
+                )
+            )
+            db.commit()
+
+        overview = client.get(
+            "/api/v1/cash-flow/overview",
+            headers=headers,
+            params={"brand_id": brand_json["id"], "period": "custom_date", "custom_date": "2026-01-10"},
+        )
+        assert overview.status_code == 200
+        body = overview.json()
+        assert body["totals"]["billed_amount_bdt"] == 11.0
+        assert body["totals"]["paid_amount_bdt"] == 0.0
+        assert body["totals"]["due_amount_bdt"] == 6.0
+        assert body["totals"]["credit_amount_bdt"] == 0.0
+        assert body["brands"][0]["paid_amount_bdt"] == 0.0
+        assert body["brands"][0]["due_amount_bdt"] == 6.0
 
 
 def test_product_image_training_and_recognition(tmp_path):
