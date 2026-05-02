@@ -16,7 +16,10 @@ from app.services.jobs import ensure_background_job_runner_started, stop_backgro
 
 
 def _is_serverless_vercel_runtime() -> bool:
-    return str(os.environ.get("VERCEL", "")).strip() == "1"
+    value = str(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV") or "").strip().lower()
+    if not value:
+        return False
+    return value not in {"0", "false", "no", "off"}
 
 
 @asynccontextmanager
@@ -38,6 +41,12 @@ def create_app() -> FastAPI:
     # On Vercel serverless runtime, avoid blocking cold-start import with schema init.
     if not _is_serverless_vercel_runtime():
         init_db()
+    else:
+        # Keep function import fast and resilient in serverless runtime.
+        try:
+            init_db()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[startup] deferred DB init in serverless runtime: {exc}", file=sys.stderr, flush=True)
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
