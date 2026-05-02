@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 import time
+import traceback
 
 APP_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = APP_ROOT.parent
@@ -126,4 +127,17 @@ def create_app() -> FastAPI:
     return app
 
 
-app = create_app()
+try:
+    app = create_app()
+except Exception as exc:  # noqa: BLE001
+    app = FastAPI(title="B2B AI Support API (startup fallback)")
+    startup_traceback = traceback.format_exc()[-3500:]
+
+    @app.get("/{path:path}")
+    def startup_failure(path: str):
+        return {
+            "status": "startup_failure",
+            "path": path,
+            "error": str(exc),
+            "traceback": startup_traceback,
+        }
