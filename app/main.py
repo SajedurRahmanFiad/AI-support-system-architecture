@@ -2,8 +2,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
 import os
+from pathlib import Path
 import sys
 import time
+
+APP_ROOT = Path(__file__).resolve().parent
+PROJECT_ROOT = APP_ROOT.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastapi import FastAPI
 from fastapi import Request
