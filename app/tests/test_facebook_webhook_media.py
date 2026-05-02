@@ -200,3 +200,15 @@ def test_facebook_webhook_downloads_audio_attachments_and_transcribes_them(tmp_p
         assert inbound["attachments"][0]["transcript"] == "Mock audio transcript"
         assert "audio-transcribed" in (outbound["flags_json"] or [])
         assert outbound["external_message_id"] == "fb-mid-audio"
+
+
+def test_facebook_messenger_client_truncates_messages_over_platform_limit():
+    from app.services.facebook_webhooks import FacebookMessengerClient
+
+    client = FacebookMessengerClient(page_access_token="token")
+    too_long_text = "a" * 2500
+
+    normalized = client._normalize_text_for_send(too_long_text)
+
+    assert len(normalized) <= client.max_text_length
+    assert normalized.endswith("... [continued]")

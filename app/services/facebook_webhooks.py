@@ -31,6 +31,7 @@ PENDING_REVIEW_LABEL_NAME = "Pending Review"
 
 class FacebookMessengerClient:
     graph_api_base_url = "https://graph.facebook.com/v25.0"
+    max_text_length = 2000
 
     def __init__(self, page_access_token: str, timeout_seconds: float = 10.0) -> None:
         self.page_access_token = page_access_token.strip()
@@ -38,7 +39,7 @@ class FacebookMessengerClient:
 
     def send_text_message(self, recipient_id: str, text: str) -> dict[str, Any]:
         cleaned_recipient_id = recipient_id.strip()
-        cleaned_text = text.strip()
+        cleaned_text = self._normalize_text_for_send(text)
         if not self.page_access_token:
             raise FacebookMessengerDeliveryError("Facebook page access token is missing.")
         if not cleaned_recipient_id:
@@ -73,6 +74,16 @@ class FacebookMessengerClient:
             raise FacebookMessengerDeliveryError("Facebook Send API returned an invalid JSON response.")
 
         return payload
+
+    def _normalize_text_for_send(self, text: str) -> str:
+        cleaned_text = text.strip()
+        if len(cleaned_text) <= self.max_text_length:
+            return cleaned_text
+
+        # Messenger rejects message[text] over 2000 chars.
+        suffix = "... [continued]"
+        limit = max(1, self.max_text_length - len(suffix))
+        return f"{cleaned_text[:limit].rstrip()}{suffix}"
 
     def send_sender_action(self, recipient_id: str, sender_action: str) -> bool:
         cleaned_recipient_id = recipient_id.strip()

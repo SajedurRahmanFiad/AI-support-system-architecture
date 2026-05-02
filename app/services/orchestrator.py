@@ -805,41 +805,71 @@ class MessageProcessor:
             if needs_refresh:
                 file_bytes = read_file_bytes(attachment.storage_path)
                 if attachment.attachment_type == "audio":
-                    transcribed = self.speech_provider.transcribe_audio(
-                        mime_type=attachment.mime_type,
-                        data=file_bytes,
-                        preferred_language=preferred_language,
-                        alternative_languages=self.settings.speech_alt_language_list,
-                    )
-                    attachment.transcript = transcribed.transcript
-                    attachment.translated_text = transcribed.translated_text
-                    attachment.detected_language = transcribed.detected_language
-                    attachment.analysis_confidence = transcribed.confidence
-                    metadata = attachment.metadata_json or {}
-                    metadata["summary"] = transcribed.summary
-                    metadata["needs_clarification"] = transcribed.needs_clarification
-                    metadata["clarification_reason"] = transcribed.clarification_reason
-                    metadata["speech_provider"] = transcribed.provider_name
-                    metadata["provider_name"] = transcribed.provider_name
-                    metadata["model_name"] = transcribed.model_name
-                    metadata["token_usage"] = transcribed.token_usage or {}
-                    attachment.metadata_json = metadata
-                    self.db.add(attachment)
-                    insight = AttachmentInsight(
-                        attachment_id=attachment.id,
-                        attachment_type=attachment.attachment_type,
-                        summary=transcribed.summary,
-                        transcript=transcribed.transcript,
-                        translated_text=transcribed.translated_text,
-                        extracted_text=None,
-                        detected_language=transcribed.detected_language,
-                        analysis_confidence=transcribed.confidence,
-                        needs_clarification=transcribed.needs_clarification,
-                        clarification_reason=transcribed.clarification_reason,
-                        provider_name=transcribed.provider_name,
-                        model_name=transcribed.model_name,
-                        token_usage=transcribed.token_usage or {},
-                    )
+                    try:
+                        transcribed = self.speech_provider.transcribe_audio(
+                            mime_type=attachment.mime_type,
+                            data=file_bytes,
+                            preferred_language=preferred_language,
+                            alternative_languages=self.settings.speech_alt_language_list,
+                        )
+                        attachment.transcript = transcribed.transcript
+                        attachment.translated_text = transcribed.translated_text
+                        attachment.detected_language = transcribed.detected_language
+                        attachment.analysis_confidence = transcribed.confidence
+                        metadata = attachment.metadata_json or {}
+                        metadata["summary"] = transcribed.summary
+                        metadata["needs_clarification"] = transcribed.needs_clarification
+                        metadata["clarification_reason"] = transcribed.clarification_reason
+                        metadata["speech_provider"] = transcribed.provider_name
+                        metadata["provider_name"] = transcribed.provider_name
+                        metadata["model_name"] = transcribed.model_name
+                        metadata["token_usage"] = transcribed.token_usage or {}
+                        attachment.metadata_json = metadata
+                        self.db.add(attachment)
+                        insight = AttachmentInsight(
+                            attachment_id=attachment.id,
+                            attachment_type=attachment.attachment_type,
+                            summary=transcribed.summary,
+                            transcript=transcribed.transcript,
+                            translated_text=transcribed.translated_text,
+                            extracted_text=None,
+                            detected_language=transcribed.detected_language,
+                            analysis_confidence=transcribed.confidence,
+                            needs_clarification=transcribed.needs_clarification,
+                            clarification_reason=transcribed.clarification_reason,
+                            provider_name=transcribed.provider_name,
+                            model_name=transcribed.model_name,
+                            token_usage=transcribed.token_usage or {},
+                        )
+                    except Exception as exc:
+                        fallback_reason = f"Audio transcription failed: {exc}"
+                        fallback_summary = "Audio could not be transcribed clearly."
+                        metadata = attachment.metadata_json or {}
+                        metadata["summary"] = fallback_summary
+                        metadata["needs_clarification"] = True
+                        metadata["clarification_reason"] = fallback_reason
+                        metadata["speech_provider"] = self.speech_provider.provider_name
+                        metadata["provider_name"] = self.speech_provider.provider_name
+                        metadata["model_name"] = getattr(getattr(self.speech_provider, "runtime", None), "model", None)
+                        metadata["token_usage"] = {}
+                        attachment.metadata_json = metadata
+                        attachment.analysis_confidence = None
+                        self.db.add(attachment)
+                        insight = AttachmentInsight(
+                            attachment_id=attachment.id,
+                            attachment_type=attachment.attachment_type,
+                            summary=fallback_summary,
+                            transcript=None,
+                            translated_text=None,
+                            extracted_text=None,
+                            detected_language=preferred_language,
+                            analysis_confidence=None,
+                            needs_clarification=True,
+                            clarification_reason=fallback_reason,
+                            provider_name=self.speech_provider.provider_name,
+                            model_name=getattr(getattr(self.speech_provider, "runtime", None), "model", None),
+                            token_usage={},
+                        )
                 else:
                     analyzed = self.attachment_provider.analyze_attachment(
                         attachment_type=attachment.attachment_type,
