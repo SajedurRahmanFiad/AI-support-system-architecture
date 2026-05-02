@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 import json
+import os
 import sys
 import time
 
@@ -14,21 +15,29 @@ from app.database import init_db
 from app.services.jobs import ensure_background_job_runner_started, stop_background_job_runner
 
 
+def _is_serverless_vercel_runtime() -> bool:
+    return str(os.environ.get("VERCEL", "")).strip() == "1"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.upload_path.mkdir(parents=True, exist_ok=True)
-    ensure_background_job_runner_started()
+    if not _is_serverless_vercel_runtime():
+        ensure_background_job_runner_started()
     try:
         yield
     finally:
-        stop_background_job_runner()
+        if not _is_serverless_vercel_runtime():
+            stop_background_job_runner()
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.upload_path.mkdir(parents=True, exist_ok=True)
-    init_db()
+    # On Vercel serverless runtime, avoid blocking cold-start import with schema init.
+    if not _is_serverless_vercel_runtime():
+        init_db()
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
