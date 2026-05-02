@@ -22,10 +22,21 @@ def _is_serverless_vercel_runtime() -> bool:
     return value not in {"0", "false", "no", "off"}
 
 
+def _ensure_upload_path(settings) -> None:
+    try:
+        settings.upload_path.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        if _is_serverless_vercel_runtime():
+            settings.upload_dir = "/tmp/uploads"
+            settings.upload_path.mkdir(parents=True, exist_ok=True)
+        else:
+            raise
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = app.state.settings
-    settings.upload_path.mkdir(parents=True, exist_ok=True)
+    _ensure_upload_path(settings)
     ensure_runner = None
     stop_runner = None
     try:
@@ -49,7 +60,7 @@ def create_app() -> FastAPI:
     from app.config import get_settings
 
     settings = get_settings()
-    settings.upload_path.mkdir(parents=True, exist_ok=True)
+    _ensure_upload_path(settings)
     # Database schema bootstrap at import time causes cold-start failures in serverless.
     # Keep app import lightweight; tables should be managed by explicit migrations/init scripts.
     app = FastAPI(
