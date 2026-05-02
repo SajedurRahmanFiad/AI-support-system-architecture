@@ -15,11 +15,6 @@ from fastapi import FastAPI
 from fastapi import Request
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.router import api_router
-from app.config import get_settings
-from app.services.jobs import ensure_background_job_runner_started, stop_background_job_runner
-
-
 def _is_serverless_vercel_runtime() -> bool:
     value = str(os.environ.get("VERCEL") or os.environ.get("VERCEL_ENV") or "").strip().lower()
     if not value:
@@ -29,18 +24,30 @@ def _is_serverless_vercel_runtime() -> bool:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    settings = get_settings()
+    settings = app.state.settings
     settings.upload_path.mkdir(parents=True, exist_ok=True)
-    if not _is_serverless_vercel_runtime():
-        ensure_background_job_runner_started()
+    ensure_runner = None
+    stop_runner = None
+    try:
+        from app.services.jobs import ensure_background_job_runner_started, stop_background_job_runner
+
+        ensure_runner = ensure_background_job_runner_started
+        stop_runner = stop_background_job_runner
+    except Exception as exc:  # noqa: BLE001
+        app.state.startup_warning = f"Job runner import failed: {exc}"
+
+    if not _is_serverless_vercel_runtime() and ensure_runner is not None:
+        ensure_runner()
     try:
         yield
     finally:
-        if not _is_serverless_vercel_runtime():
-            stop_background_job_runner()
+        if not _is_serverless_vercel_runtime() and stop_runner is not None:
+            stop_runner()
 
 
 def create_app() -> FastAPI:
+    from app.config import get_settings
+
     settings = get_settings()
     settings.upload_path.mkdir(parents=True, exist_ok=True)
     # Database schema bootstrap at import time causes cold-start failures in serverless.
@@ -59,6 +66,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
         allow_credentials=True,
     )
+    app.state.settings = settings
+    app.state.startup_warning = None
 
     @app.middleware("http")
     async def log_requests(request: Request, call_next):
@@ -89,15 +98,31 @@ def create_app() -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def root() -> dict[str, str]:
+        warning = app.state.startup_warning
         return {
             "status": "ok",
             "app": settings.app_name,
             "env": settings.app_env,
             "health": "api/health",
             "docs": "docs",
+            "warning": warning,
         }
 
-    app.include_router(api_router, prefix="/api")
+    try:
+        from app.api.router import api_router
+
+        app.include_router(api_router, prefix="/api")
+    except Exception as exc:  # noqa: BLE001
+        app.state.startup_warning = f"API router import failed: {exc}"
+
+        @app.get("/api/health")
+        def degraded_health() -> dict[str, str]:
+            return {
+                "status": "degraded",
+                "app": settings.app_name,
+                "env": settings.app_env,
+                "warning": str(app.state.startup_warning),
+            }
     return app
 
 
