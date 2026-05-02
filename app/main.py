@@ -11,7 +11,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.router import api_router
 from app.config import get_settings
-from app.database import init_db
 from app.services.jobs import ensure_background_job_runner_started, stop_background_job_runner
 
 
@@ -38,15 +37,8 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     settings.upload_path.mkdir(parents=True, exist_ok=True)
-    # On Vercel serverless runtime, avoid blocking cold-start import with schema init.
-    if not _is_serverless_vercel_runtime():
-        init_db()
-    else:
-        # Keep function import fast and resilient in serverless runtime.
-        try:
-            init_db()
-        except Exception as exc:  # noqa: BLE001
-            print(f"[startup] deferred DB init in serverless runtime: {exc}", file=sys.stderr, flush=True)
+    # Database schema bootstrap at import time causes cold-start failures in serverless.
+    # Keep app import lightweight; tables should be managed by explicit migrations/init scripts.
     app = FastAPI(
         title=settings.app_name,
         version="0.1.0",
