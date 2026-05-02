@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -30,6 +31,16 @@ def _log_job_runner(message: str) -> None:
         print(message, flush=True)
     except (BrokenPipeError, OSError):
         return
+
+
+def _emit_job_event(event: str, **fields: object) -> None:
+    payload = {
+        "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "event": event,
+        "component": "job_runner",
+    }
+    payload.update(fields)
+    _log_job_runner(json.dumps(payload, ensure_ascii=False))
 
 
 def enqueue_job(
@@ -164,6 +175,7 @@ def _process_job(job_id: int) -> int:
             return job_id
 
         try:
+            _emit_job_event("job_processing_started", level="INFO", job_id=job.id, kind=job.kind, brand_id=job.brand_id)
             if job.kind == "process_message":
                 payload = MessageProcessRequest.model_validate(job.payload_json or {})
                 typing_indicator = begin_facebook_typing_indicator(db, payload)
@@ -172,6 +184,16 @@ def _process_job(job_id: int) -> int:
                     delivery = deliver_external_reply_if_needed(db, payload, result)
                 finally:
                     typing_indicator.stop()
+                _emit_job_event(
+                    "message_processed",
+                    level="INFO",
+                    job_id=job.id,
+                    brand_id=job.brand_id,
+                    channel=payload.channel,
+                    conversation_id=result.conversation_id,
+                    status=result.status,
+                    delivery_status=delivery.get("status"),
+                )
                 job.result_json = {
                     **result.model_dump(),
                     "delivery": delivery,
@@ -205,6 +227,16 @@ def _process_job(job_id: int) -> int:
             job.status = "pending" if should_retry else "failed"
             _log_job_runner(
                 f"[job-runner] job={job.id} kind={job.kind} status={job.status} attempts={job.attempts} error={exc}"
+            )
+            _emit_job_event(
+                "job_processing_failed",
+                level="ERROR",
+                job_id=job.id,
+                kind=job.kind,
+                brand_id=job.brand_id,
+                status=job.status,
+                attempts=job.attempts,
+                error=str(exc),
             )
         finally:
             job.locked_at = None

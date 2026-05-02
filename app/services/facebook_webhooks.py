@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import json
+import sys
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import urlparse
@@ -291,6 +292,18 @@ class FacebookWebhookService:
             "details": details,
         }
 
+    def _emit_event(self, event: str, **fields: Any) -> None:
+        payload: dict[str, Any] = {
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "event": event,
+            "component": "facebook_webhook",
+        }
+        payload.update(fields)
+        try:
+            print(json.dumps(payload, ensure_ascii=False), file=sys.stderr, flush=True)
+        except Exception:
+            return
+
     def _handle_entry(self, entry: Any) -> tuple[int, int, int, list[str]]:
         if not isinstance(entry, dict):
             return 0, 1, 0, ["Ignored malformed Facebook entry."]
@@ -373,6 +386,16 @@ class FacebookWebhookService:
             return "ignored", f"Ignored self-authored Messenger event for page {page.page_id}."
 
         referral = self._extract_referral_metadata(event)
+        self._emit_event(
+            "message_received",
+            level="INFO",
+            channel="facebook_messenger",
+            brand_id=page.brand_id,
+            page_id=page.page_id,
+            sender_id=sender_id,
+            has_message=bool(event.get("message")),
+            has_postback=bool(event.get("postback")),
+        )
 
         external_message_id = (
             self._clean_text(((event.get("message") or {}) if isinstance(event.get("message"), dict) else {}).get("mid"))
@@ -428,6 +451,16 @@ class FacebookWebhookService:
         )
         if self._should_batch_messenger_messages():
             job = self._enqueue_or_merge_messenger_job(page, request_payload)
+            self._emit_event(
+                "message_queued",
+                level="INFO",
+                channel="facebook_messenger",
+                brand_id=page.brand_id,
+                page_id=page.page_id,
+                sender_id=sender_id,
+                job_id=job.id,
+                queue_mode="batch-window",
+            )
             detail = (
                 f"Queued Messenger event for page {page.page_id} as job {job.id}. "
                 "The reply will be generated after the short typing window closes."
@@ -436,6 +469,16 @@ class FacebookWebhookService:
         if self.settings.facebook_webhook_async_enabled:
             queued_payload = request_payload.model_copy(update={"process_async": True})
             job = enqueue_job(self.db, "process_message", queued_payload.model_dump(), page.brand_id)
+            self._emit_event(
+                "message_queued",
+                level="INFO",
+                channel="facebook_messenger",
+                brand_id=page.brand_id,
+                page_id=page.page_id,
+                sender_id=sender_id,
+                job_id=job.id,
+                queue_mode="async",
+            )
             detail = (
                 f"Queued Messenger event for page {page.page_id} as job {job.id}. "
                 "The background runner will generate and deliver the reply."
@@ -450,6 +493,15 @@ class FacebookWebhookService:
         finally:
             typing_indicator.stop()
         if delivery_state == "sent":
+            self._emit_event(
+                "message_reply_sent",
+                level="INFO",
+                channel="facebook_messenger",
+                brand_id=page.brand_id,
+                page_id=page.page_id,
+                sender_id=sender_id,
+                conversation_id=result.conversation_id,
+            )
             detail = (
                 f"Processed Messenger event for page {page.page_id} into conversation "
                 f"{result.conversation_id} and sent the reply through Meta."
@@ -460,6 +512,15 @@ class FacebookWebhookService:
                 f"{result.conversation_id}; the Messenger reply was already delivered."
             )
         else:
+            self._emit_event(
+                "message_reply_generated",
+                level="INFO",
+                channel="facebook_messenger",
+                brand_id=page.brand_id,
+                page_id=page.page_id,
+                sender_id=sender_id,
+                conversation_id=result.conversation_id,
+            )
             detail = f"Processed Messenger event for page {page.page_id} into conversation {result.conversation_id}."
         return "processed", detail
 
