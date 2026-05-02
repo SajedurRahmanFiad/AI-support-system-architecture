@@ -94,6 +94,7 @@ class GeminiSpeechProvider(SpeechProvider):
         preferred_language: str | None,
         alternative_languages: list[str],
     ) -> SpeechTranscriptionResult:
+        normalized_mime_type = self._normalize_audio_mime_type(mime_type)
         prompt = self._build_prompt(preferred_language, alternative_languages)
         uploaded_file_name: str | None = None
         temp_path: Path | None = None
@@ -105,7 +106,7 @@ class GeminiSpeechProvider(SpeechProvider):
                     temp_path = Path(temp_file.name)
                 uploaded = self.client.files.upload(
                     file=str(temp_path),
-                    config={"mimeType": mime_type},
+                    config={"mimeType": normalized_mime_type},
                 )
                 uploaded_file_name = uploaded.name
                 response = self.client.models.generate_content(
@@ -115,7 +116,7 @@ class GeminiSpeechProvider(SpeechProvider):
             else:
                 response = self.client.models.generate_content(
                     model=self.runtime.model or self.settings.gemini_model,
-                    contents=[prompt, types.Part.from_bytes(data=data, mime_type=mime_type)],
+                    contents=[prompt, types.Part.from_bytes(data=data, mime_type=normalized_mime_type)],
                 )
         finally:
             if temp_path and temp_path.exists():
@@ -223,6 +224,12 @@ class GeminiSpeechProvider(SpeechProvider):
             "video/mp4": ".m4a",
         }
         return mapping.get(mime_type, ".bin")
+
+    def _normalize_audio_mime_type(self, mime_type: str) -> str:
+        normalized = (mime_type or "").strip().lower()
+        if normalized == "video/mp4":
+            return "audio/mp4"
+        return normalized or "audio/mp4"
 
 
 class GoogleCloudSpeechProvider(SpeechProvider):
