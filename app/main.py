@@ -108,7 +108,7 @@ def create_app() -> FastAPI:
         return response
 
     @app.get("/", include_in_schema=False)
-    def root() -> dict[str, str]:
+    def root() -> dict[str, str | None]:
         warning = app.state.startup_warning
         return {
             "status": "ok",
