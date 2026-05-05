@@ -195,7 +195,10 @@ def _process_job(job_id: int) -> int:
                     brand = db.get(models.Brand, job.brand_id)
                     provider = build_llm_provider(brand)
                     completeness = provider.check_intent_completeness(text)
-                    age_seconds = (datetime.now(timezone.utc) - job.created_at).total_seconds()
+                    
+                    now_utc_naive = datetime.now(timezone.utc).replace(tzinfo=None)
+                    created_at_naive = job.created_at.replace(tzinfo=None) if job.created_at else now_utc_naive
+                    age_seconds = (now_utc_naive - created_at_naive).total_seconds()
                     
                     if completeness == "INCOMPLETE" and age_seconds < 30:
                         job.status = "pending"
