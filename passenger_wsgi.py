@@ -2,9 +2,10 @@ import os
 import sys
 from pathlib import Path
 
-# Disable the background job runner thread in Passenger WSGI
-# This avoids deadlocks when Passenger forks worker processes
-os.environ["VERCEL"] = "1"
+# VERCEL="0" allows the background job runner thread to start in the WSGI worker.
+# PERSIST_BACKGROUND_JOB_RUNNER="0" prevents duplicate detached subprocesses from spawning.
+# The lazy ASGIMiddleware initialization ensures the thread starts *after* Passenger forks, avoiding deadlocks.
+os.environ["VERCEL"] = "0"
 os.environ["PERSIST_BACKGROUND_JOB_RUNNER"] = "0"
 
 def _resolve_repo_root() -> Path:
@@ -35,7 +36,6 @@ try:
 except Exception as exc:
     raise RuntimeError("a2wsgi is required for Passenger WSGI hosting.") from exc
 
-# Lazy instantiation to avoid fork() deadlocks with a2wsgi background thread
 _application = None
 
 def application(environ, start_response):
