@@ -416,6 +416,10 @@ class MessageProcessor:
 
         inbound_message.status = "processed" if decision_status != "handoff" else "handoff"
         inbound_message.flags_json = flags
+        
+        if decision_status == "handoff" and not handoff_reason:
+            handoff_reason = "System or AI triggered a manual handoff without a specific reason."
+            
         inbound_message.handoff_reason = handoff_reason
 
         if decision_status == "handoff":
