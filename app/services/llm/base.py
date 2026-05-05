@@ -113,6 +113,10 @@ class LLMProvider(ABC):
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         raise NotImplementedError
 
+    def check_intent_completeness(self, text: str) -> str:
+        """Return 'COMPLETE' or 'INCOMPLETE' based on whether the user's intent appears finished."""
+        return "COMPLETE"
+
     @abstractmethod
     def embed_image(self, image_data: bytes) -> list[float]:
         """Create embedding (fingerprint) of an image"""

@@ -150,6 +150,23 @@ class GeminiLLMProvider(LLMProvider):
         vectors = self.embed_texts([text]) if text else []
         return vectors[0] if vectors else []
 
+    def check_intent_completeness(self, text: str) -> str:
+        if not text.strip():
+            return "COMPLETE"
+        prompt = (
+            "Analyze the following user message to determine if their intent is complete, or if they are likely continuing to type more. "
+            "Reply with exactly one word: 'COMPLETE' or 'INCOMPLETE'.\n\n"
+            f"Message: {text}"
+        )
+        try:
+            response = self._generate_content(model=self.runtime.model, contents=prompt)
+            result = getattr(response, "text", "COMPLETE").strip().upper()
+            if "INCOMPLETE" in result:
+                return "INCOMPLETE"
+            return "COMPLETE"
+        except Exception:
+            return "COMPLETE"
+
     def match_product_candidates(
         self,
         mime_type: str,

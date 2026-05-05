@@ -2,11 +2,12 @@ import os
 import sys
 from pathlib import Path
 
-# VERCEL="0" allows the background job runner thread to start in the WSGI worker.
-# PERSIST_BACKGROUND_JOB_RUNNER="0" prevents duplicate detached subprocesses from spawning.
-# The lazy ASGIMiddleware initialization ensures the thread starts *after* Passenger forks, avoiding deadlocks.
-os.environ["VERCEL"] = "0"
-os.environ["PERSIST_BACKGROUND_JOB_RUNNER"] = "0"
+# VERCEL="1" prevents the background daemon thread from starting in the WSGI worker, 
+# as Passenger freezes background threads when there are no active requests.
+# PERSIST_BACKGROUND_JOB_RUNNER="1" allows `enqueue_job` to spawn a completely detached
+# subprocess that escapes Passenger's process group and processes jobs reliably.
+os.environ["VERCEL"] = "1"
+os.environ["PERSIST_BACKGROUND_JOB_RUNNER"] = "1"
 
 def _resolve_repo_root() -> Path:
     configured = os.environ.get("REPO_ROOT", "").strip()

@@ -89,16 +89,26 @@ def schedule_background_job_processing(available_at: datetime | None = None) -> 
     existing_python_path = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = str(repo_root) if not existing_python_path else f"{repo_root}{os.pathsep}{existing_python_path}"
     limit = max(1, get_settings().job_runner_batch_size)
+    
+    env_python = os.environ.get("VIRTUAL_ENV")
+    if env_python:
+        python_executable = str(Path(env_python) / "bin" / "python")
+    else:
+        python_executable = sys.executable
+
+    if "virtualenv" in sys.prefix:
+        python_executable = str(Path(sys.prefix) / "bin" / "python")
+
     launch_code = (
         "import subprocess, sys, time; "
         f"time.sleep({delay_seconds!r}); "
-        f"subprocess.run([sys.executable, '-m', 'app.cli', 'run-jobs', '--limit', '{limit}'], "
+        f"subprocess.run([{python_executable!r}, '-m', 'app.cli', 'run-jobs', '--limit', '{limit}'], "
         f"cwd={str(repo_root)!r}, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)"
     )
 
     try:
         subprocess.Popen(
-            [sys.executable, "-c", launch_code],
+            [python_executable, "-c", launch_code],
             cwd=repo_root,
             env=env,
             stdin=subprocess.DEVNULL,
@@ -178,10 +188,59 @@ def _process_job(job_id: int) -> int:
             _emit_job_event("job_processing_started", level="INFO", job_id=job.id, kind=job.kind, brand_id=job.brand_id)
             if job.kind == "process_message":
                 payload = MessageProcessRequest.model_validate(job.payload_json or {})
+                
+                metadata = payload.metadata or {}
+                text = str(payload.text or "").strip()
+                if text and not metadata.get("completeness_checked"):
+                    brand = db.get(models.Brand, job.brand_id)
+                    provider = build_llm_provider(brand)
+                    completeness = provider.check_intent_completeness(text)
+                    age_seconds = (datetime.now(timezone.utc) - job.created_at).total_seconds()
+                    
+                    if completeness == "INCOMPLETE" and age_seconds < 30:
+                        job.status = "pending"
+                        job.available_at = min(
+                            datetime.now(timezone.utc) + timedelta(seconds=10),
+                            job.created_at + timedelta(seconds=30)
+                        )
+                        payload.metadata = payload.metadata or {}
+                        payload.metadata["completeness_checked"] = True
+                        job.payload_json = payload.model_dump()
+                        job.attempts = max(0, job.attempts - 1)
+                        db.commit()
+                        return job_id
+
                 typing_indicator = begin_facebook_typing_indicator(db, payload)
                 try:
                     result = MessageProcessor(db).process(payload)
-                    delivery = deliver_external_reply_if_needed(db, payload, result)
+                    delivery = {}
+                    
+                    if 0.4 <= result.confidence < 0.8 and result.status != "handoff":
+                        import time
+                        from sqlalchemy import select
+                        time.sleep(15)
+                        
+                        newer_message = db.scalar(
+                            select(models.Message.id)
+                            .where(
+                                models.Message.conversation_id == result.conversation_id,
+                                models.Message.role == "customer",
+                                models.Message.id > result.inbound_message_id
+                            )
+                            .limit(1)
+                        )
+                        
+                        if newer_message:
+                            outbound = db.get(models.Message, result.outbound_message_id)
+                            if outbound:
+                                outbound.status = "cancelled_due_to_new_message"
+                                db.commit()
+                            delivery = {"status": "cancelled"}
+                            result.status = "cancelled_due_to_new_message"
+                        else:
+                            delivery = deliver_external_reply_if_needed(db, payload, result)
+                    else:
+                        delivery = deliver_external_reply_if_needed(db, payload, result)
                 finally:
                     typing_indicator.stop()
                 _emit_job_event(
