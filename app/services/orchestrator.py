@@ -583,10 +583,10 @@ class MessageProcessor:
             return raw_text, []
 
         if self._is_pure_marker_text(raw_text):
-            return reference_text, ["reply-context:previous-message"]
+            return f"The customer nudged the conversation by sending '{raw_text}'. Context from their previous message: {reference_text}", ["reply-context:previous-message"]
 
         return (
-            f"{reference_text}\n\nCustomer follow-up marker: {raw_text}",
+            f"Context from previous message: {reference_text}\n\nCustomer follow-up marker: {raw_text}",
             ["reply-context:previous-message"],
         )
 

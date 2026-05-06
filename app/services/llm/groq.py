@@ -167,6 +167,9 @@ class GroqLLMProvider(LLMProvider):
             f"Tone instructions: {brand.tone_instructions or 'Keep it warm, clear, and sales-aware.'}\n"
             f"Public reply guidelines: {brand.public_reply_guidelines or 'No extra public rules.'}\n"
             f"Brand rules:\n{rules}\n\n"
+            f"Tone instructions: {brand.tone_instructions or 'Keep it warm, clear, and sales-aware.'}\n"
+            f"Public reply guidelines: {brand.public_reply_guidelines or 'No extra public rules.'}\n"
+            f"Brand rules:\n{rules}\n\n"
             f"Style examples:\n{style_examples}\n\n"
             f"Customer snapshot: {customer_text}\n\n"
             f"Recent conversation:\n{self._format_history(history)}\n\n"
@@ -174,7 +177,7 @@ class GroqLLMProvider(LLMProvider):
             f"Attachment insights:\n{attachment_text}\n\n"
             f"Knowledge candidates:\n{knowledge_text}\n\n"
             f"Language behavior: {self._language_instruction(brand.default_language, customer.language)}\n\n"
-            "Reply_text should be customer-facing. customer_updates can include display_name, language, city, and facts. "
+            "Reply_text should be customer-facing. customer_updates can include display_name, language, city, and facts (an array of objects with 'key' and 'value'). "
             "used_knowledge_ids should only contain chunk ids you actually used."
         )
 

@@ -138,6 +138,8 @@ def apply_customer_updates(db: Session, customer: models.Customer, updates: dict
         customer.city = updates["city"]
 
     for item in updates.get("facts") or []:
+        if not isinstance(item, dict):
+            continue
         key = normalize_fact_key(item.get("key", ""))
         value = str(item.get("value", "")).strip()
         if not key or not value:

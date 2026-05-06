@@ -354,8 +354,8 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             f"Incoming customer message:\n{incoming_text}\n\n"
             f"Attachment insights:\n{attachment_text}\n\n"
             f"Knowledge candidates:\n{knowledge_text}\n\n"
-            f"Language behavior: {self._language_instruction(brand.default_language, customer.language)}\n\n"
-            "Reply_text should be customer-facing. customer_updates can include display_name, language, city, and facts. "
+            "Language behavior: {self._language_instruction(brand.default_language, customer.language)}\n\n"
+            "Reply_text should be customer-facing. customer_updates can include display_name, language, city, and facts (an array of objects with 'key' and 'value'). "
             "used_knowledge_ids should only contain chunk ids you actually used."
         )
 
