@@ -219,8 +219,6 @@ def _process_job(job_id: int) -> int:
                     delivery = {}
                     
                     if 0.4 <= result.confidence < 0.8 and result.status != "handoff":
-                        from datetime import datetime, timedelta, timezone
-                        from app.services.jobs import enqueue_job
                         
                         enqueue_job(
                             db,
