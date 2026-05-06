@@ -219,29 +219,21 @@ def _process_job(job_id: int) -> int:
                     delivery = {}
                     
                     if 0.4 <= result.confidence < 0.8 and result.status != "handoff":
-                        import time
-                        from sqlalchemy import select
-                        time.sleep(15)
+                        from datetime import datetime, timedelta, timezone
+                        from app.services.jobs import enqueue_job
                         
-                        newer_message = db.scalar(
-                            select(models.Message.id)
-                            .where(
-                                models.Message.conversation_id == result.conversation_id,
-                                models.Message.role == "customer",
-                                models.Message.id > result.inbound_message_id
-                            )
-                            .limit(1)
+                        enqueue_job(
+                            db,
+                            "deliver_delayed_reply",
+                            {
+                                "result": result.model_dump(),
+                                "request_payload": payload.model_dump()
+                            },
+                            job.brand_id,
+                            available_at=datetime.now(timezone.utc) + timedelta(seconds=15)
                         )
-                        
-                        if newer_message:
-                            outbound = db.get(models.Message, result.outbound_message_id)
-                            if outbound:
-                                outbound.status = "cancelled_due_to_new_message"
-                                db.commit()
-                            delivery = {"status": "cancelled"}
-                            result.status = "cancelled_due_to_new_message"
-                        else:
-                            delivery = deliver_external_reply_if_needed(db, payload, result)
+                        delivery = {"status": "delayed_for_newer_messages"}
+                        result.status = "delayed_for_newer_messages"
                     else:
                         delivery = deliver_external_reply_if_needed(db, payload, result)
                 finally:
@@ -252,6 +244,50 @@ def _process_job(job_id: int) -> int:
                     job_id=job.id,
                     brand_id=job.brand_id,
                     channel=payload.channel,
+                    conversation_id=result.conversation_id,
+                    status=result.status,
+                    delivery_status=delivery.get("status"),
+                )
+                job.result_json = {
+                    **result.model_dump(),
+                    "delivery": delivery,
+                }
+            elif job.kind == "deliver_delayed_reply":
+                payload_data = job.payload_json or {}
+                result_dict = payload_data.get("result")
+                request_payload_dict = payload_data.get("request_payload")
+                
+                from app.api.schemas.messages import MessageProcessResponse
+                result = MessageProcessResponse.model_validate(result_dict)
+                request_payload = MessageProcessRequest.model_validate(request_payload_dict)
+                
+                newer_message = db.scalar(
+                    select(models.Message.id)
+                    .where(
+                        models.Message.conversation_id == result.conversation_id,
+                        models.Message.role == "customer",
+                        models.Message.id > result.inbound_message_id
+                    )
+                    .limit(1)
+                )
+                
+                delivery = {}
+                if newer_message:
+                    outbound = db.get(models.Message, result.outbound_message_id)
+                    if outbound:
+                        outbound.status = "cancelled_due_to_new_message"
+                        db.commit()
+                    delivery = {"status": "cancelled"}
+                    result.status = "cancelled_due_to_new_message"
+                else:
+                    delivery = deliver_external_reply_if_needed(db, request_payload, result)
+                    
+                _emit_job_event(
+                    "delayed_message_processed",
+                    level="INFO",
+                    job_id=job.id,
+                    brand_id=job.brand_id,
+                    channel=request_payload.channel,
                     conversation_id=result.conversation_id,
                     status=result.status,
                     delivery_status=delivery.get("status"),
