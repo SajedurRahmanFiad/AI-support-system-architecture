@@ -21,7 +21,8 @@ class FacebookTypingIndicatorSession:
             return
         self.active = False
         try:
-            self.client.send_sender_action(self.recipient_id, "typing_off")
+            import asyncio
+            asyncio.run(self.client.send_sender_action(self.recipient_id, "typing_off"))
         except Exception:  # noqa: BLE001
             return
 
@@ -76,10 +77,11 @@ def deliver_external_reply_if_needed(
         return {"status": "no_reply", "provider_message_id": None, "pending_review_label": label_state}
 
     try:
-        delivery = FacebookMessengerClient(page.page_access_token).send_text_message(
+        import asyncio
+        delivery = asyncio.run(FacebookMessengerClient(page.page_access_token).send_text_message(
             recipient_id=recipient_id,
             text=reply_text,
-        )
+        ))
     except FacebookMessengerDeliveryError as exc:
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
 
@@ -118,7 +120,8 @@ def begin_facebook_typing_indicator(
 
     client = FacebookMessengerClient(page.page_access_token)
     try:
-        active = client.send_sender_action(recipient_id, "typing_on")
+        import asyncio
+        active = asyncio.run(client.send_sender_action(recipient_id, "typing_on"))
     except Exception:  # noqa: BLE001
         active = False
     return FacebookTypingIndicatorSession(client=client, recipient_id=recipient_id, active=active)

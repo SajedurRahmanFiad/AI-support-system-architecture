@@ -4,13 +4,15 @@ from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import APIKeyHeader
 from sqlalchemy.orm import Session
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
-from app.database import get_db
+from app.database import get_db, get_async_db
 
 platform_token_header = APIKeyHeader(name="X-Platform-Token", auto_error=False)
 brand_token_header = APIKeyHeader(name="X-Brand-Api-Key", auto_error=False)
 
 DbSession = Annotated[Session, Depends(get_db)]
+AsyncDbSession = Annotated[AsyncSession, Depends(get_async_db)]
 
 
 def require_platform_access(token: str | None = Security(platform_token_header)) -> None:

@@ -24,8 +24,14 @@ def verify_facebook_webhook(
     return PlainTextResponse(content=challenge)
 
 
+from fastapi.concurrency import run_in_threadpool
+
 @router.post("/webhook")
 async def receive_facebook_webhook(request: Request, db: DbSession) -> dict[str, object]:
     raw_body = await request.body()
     signature = request.headers.get("X-Hub-Signature-256")
-    return FacebookWebhookService(db).handle_payload(raw_body=raw_body, signature_header=signature)
+    return await run_in_threadpool(
+        FacebookWebhookService(db).handle_payload,
+        raw_body=raw_body,
+        signature_header=signature
+    )

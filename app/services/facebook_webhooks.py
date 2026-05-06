@@ -38,7 +38,7 @@ class FacebookMessengerClient:
         self.page_access_token = page_access_token.strip()
         self.timeout_seconds = timeout_seconds
 
-    def send_text_message(self, recipient_id: str, text: str) -> dict[str, Any]:
+    async def send_text_message(self, recipient_id: str, text: str) -> dict[str, Any]:
         cleaned_recipient_id = recipient_id.strip()
         cleaned_text = self._normalize_text_for_send(text)
         if not self.page_access_token:
@@ -49,16 +49,17 @@ class FacebookMessengerClient:
             raise FacebookMessengerDeliveryError("Messenger reply text is empty.")
 
         try:
-            response = httpx.post(
-                f"{self.graph_api_base_url}/me/messages",
-                params={"access_token": self.page_access_token},
-                json={
-                    "recipient": {"id": cleaned_recipient_id},
-                    "messaging_type": "RESPONSE",
-                    "message": {"text": cleaned_text},
-                },
-                timeout=self.timeout_seconds,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.graph_api_base_url}/me/messages",
+                    params={"access_token": self.page_access_token},
+                    json={
+                        "recipient": {"id": cleaned_recipient_id},
+                        "messaging_type": "RESPONSE",
+                        "message": {"text": cleaned_text},
+                    },
+                    timeout=self.timeout_seconds,
+                )
         except httpx.HTTPError as exc:
             raise FacebookMessengerDeliveryError(f"Facebook Send API request failed: {exc}") from exc
 
@@ -86,7 +87,7 @@ class FacebookMessengerClient:
         limit = max(1, self.max_text_length - len(suffix))
         return f"{cleaned_text[:limit].rstrip()}{suffix}"
 
-    def send_sender_action(self, recipient_id: str, sender_action: str) -> bool:
+    async def send_sender_action(self, recipient_id: str, sender_action: str) -> bool:
         cleaned_recipient_id = recipient_id.strip()
         cleaned_action = sender_action.strip().lower()
         if not self.page_access_token or not cleaned_recipient_id:
@@ -95,32 +96,34 @@ class FacebookMessengerClient:
             return False
 
         try:
-            response = httpx.post(
-                f"{self.graph_api_base_url}/me/messages",
-                params={"access_token": self.page_access_token},
-                json={
-                    "recipient": {"id": cleaned_recipient_id},
-                    "sender_action": cleaned_action,
-                },
-                timeout=self.timeout_seconds,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.graph_api_base_url}/me/messages",
+                    params={"access_token": self.page_access_token},
+                    json={
+                        "recipient": {"id": cleaned_recipient_id},
+                        "sender_action": cleaned_action,
+                    },
+                    timeout=self.timeout_seconds,
+                )
         except httpx.HTTPError:
             return False
         return response.status_code < 400
 
-    def get_user_profile(self, recipient_id: str) -> dict[str, Any] | None:
+    async def get_user_profile(self, recipient_id: str) -> dict[str, Any] | None:
         cleaned_recipient_id = recipient_id.strip()
         if not self.page_access_token or not cleaned_recipient_id:
             return None
         try:
-            response = httpx.get(
-                f"{self.graph_api_base_url}/{cleaned_recipient_id}",
-                params={
-                    "access_token": self.page_access_token,
-                    "fields": "name,first_name,last_name,profile_pic",
-                },
-                timeout=self.timeout_seconds,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.graph_api_base_url}/{cleaned_recipient_id}",
+                    params={
+                        "access_token": self.page_access_token,
+                        "fields": "name,first_name,last_name,profile_pic",
+                    },
+                    timeout=self.timeout_seconds,
+                )
         except httpx.HTTPError:
             return None
         if response.status_code >= 400:
@@ -131,12 +134,12 @@ class FacebookMessengerClient:
             return None
         return payload if isinstance(payload, dict) else None
 
-    def ensure_custom_label(self, page_id: str, label_name: str) -> str | None:
+    async def ensure_custom_label(self, page_id: str, label_name: str) -> str | None:
         normalized_name = label_name.strip()
         if not self.page_access_token or not page_id.strip() or not normalized_name:
             return None
 
-        existing = self.list_custom_labels(page_id)
+        existing = await self.list_custom_labels(page_id)
         for item in existing:
             label_value = str(item.get("page_label_name") or item.get("name") or "").strip()
             if label_value.lower() == normalized_name.lower():
@@ -145,12 +148,13 @@ class FacebookMessengerClient:
                     return label_id
 
         try:
-            response = httpx.post(
-                f"{self.graph_api_base_url}/{page_id}/custom_labels",
-                params={"access_token": self.page_access_token},
-                data={"page_label_name": normalized_name},
-                timeout=self.timeout_seconds,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.graph_api_base_url}/{page_id}/custom_labels",
+                    params={"access_token": self.page_access_token},
+                    data={"page_label_name": normalized_name},
+                    timeout=self.timeout_seconds,
+                )
         except httpx.HTTPError:
             return None
         if response.status_code >= 400:
@@ -163,15 +167,16 @@ class FacebookMessengerClient:
             return None
         return str(payload.get("id") or "").strip() or None
 
-    def list_custom_labels(self, page_id: str) -> list[dict[str, Any]]:
+    async def list_custom_labels(self, page_id: str) -> list[dict[str, Any]]:
         if not self.page_access_token or not page_id.strip():
             return []
         try:
-            response = httpx.get(
-                f"{self.graph_api_base_url}/{page_id}/custom_labels",
-                params={"access_token": self.page_access_token, "fields": "id,page_label_name"},
-                timeout=self.timeout_seconds,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    f"{self.graph_api_base_url}/{page_id}/custom_labels",
+                    params={"access_token": self.page_access_token, "fields": "id,page_label_name"},
+                    timeout=self.timeout_seconds,
+                )
         except httpx.HTTPError:
             return []
         if response.status_code >= 400:
@@ -183,34 +188,36 @@ class FacebookMessengerClient:
         data = payload.get("data") if isinstance(payload, dict) else None
         return [item for item in data if isinstance(item, dict)] if isinstance(data, list) else []
 
-    def associate_label(self, recipient_id: str, label_id: str) -> bool:
+    async def associate_label(self, recipient_id: str, label_id: str) -> bool:
         if not self.page_access_token or not recipient_id.strip() or not label_id.strip():
             return False
         try:
-            response = httpx.post(
-                f"{self.graph_api_base_url}/{recipient_id}/custom_labels",
-                params={
-                    "access_token": self.page_access_token,
-                    "custom_label_id": label_id,
-                },
-                timeout=self.timeout_seconds,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    f"{self.graph_api_base_url}/{recipient_id}/custom_labels",
+                    params={
+                        "access_token": self.page_access_token,
+                        "custom_label_id": label_id,
+                    },
+                    timeout=self.timeout_seconds,
+                )
         except httpx.HTTPError:
             return False
         return response.status_code < 400
 
-    def remove_label(self, recipient_id: str, label_id: str) -> bool:
+    async def remove_label(self, recipient_id: str, label_id: str) -> bool:
         if not self.page_access_token or not recipient_id.strip() or not label_id.strip():
             return False
         try:
-            response = httpx.delete(
-                f"{self.graph_api_base_url}/{recipient_id}/custom_labels",
-                params={
-                    "access_token": self.page_access_token,
-                    "custom_label_id": label_id,
-                },
-                timeout=self.timeout_seconds,
-            )
+            async with httpx.AsyncClient() as client:
+                response = await client.delete(
+                    f"{self.graph_api_base_url}/{recipient_id}/custom_labels",
+                    params={
+                        "access_token": self.page_access_token,
+                        "custom_label_id": label_id,
+                    },
+                    timeout=self.timeout_seconds,
+                )
         except httpx.HTTPError:
             return False
         return response.status_code < 400
@@ -703,26 +710,32 @@ class FacebookWebhookService:
         return row.id
 
     def _download_attachment(self, source_url: str, page_access_token: str) -> httpx.Response:
-        try:
-            response = httpx.get(source_url, timeout=20.0, follow_redirects=True)
-        except httpx.HTTPError as exc:
-            raise RuntimeError(f"attachment download failed: {exc}") from exc
-
-        if response.status_code in {401, 403} and page_access_token:
+        import asyncio
+        async def _download() -> httpx.Response:
             try:
-                response = httpx.get(
-                    source_url,
-                    params={"access_token": page_access_token},
-                    timeout=20.0,
-                    follow_redirects=True,
-                )
+                async with httpx.AsyncClient() as client:
+                    response = await client.get(source_url, timeout=20.0, follow_redirects=True)
             except httpx.HTTPError as exc:
                 raise RuntimeError(f"attachment download failed: {exc}") from exc
 
-        if response.status_code >= 400:
-            raise RuntimeError(f"attachment download returned HTTP {response.status_code}")
+            if response.status_code in {401, 403} and page_access_token:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(
+                            source_url,
+                            params={"access_token": page_access_token},
+                            timeout=20.0,
+                            follow_redirects=True,
+                        )
+                except httpx.HTTPError as exc:
+                    raise RuntimeError(f"attachment download failed: {exc}") from exc
 
-        return response
+            if response.status_code >= 400:
+                raise RuntimeError(f"attachment download returned HTTP {response.status_code}")
+
+            return response
+            
+        return asyncio.run(_download())
 
     def _attachment_filename(self, source_url: str, mime_type: str, attachment_type: str, index: int) -> str:
         parsed = urlparse(source_url)
