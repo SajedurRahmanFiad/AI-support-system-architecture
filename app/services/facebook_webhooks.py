@@ -1119,15 +1119,17 @@ def sync_pending_review_label(db: Session, conversation: models.Conversation, en
     if page is None or not page.page_access_token:
         return False
 
+    import asyncio
     client = FacebookMessengerClient(page.page_access_token)
     known_labels = metadata.get("labels") if isinstance(metadata.get("labels"), dict) else {}
     label_id = str(known_labels.get("pending_review") or "").strip() or None
     if enabled:
-        label_id = client.ensure_custom_label(page.page_id, PENDING_REVIEW_LABEL_NAME)
+        label_id = asyncio.run(client.ensure_custom_label(page.page_id, PENDING_REVIEW_LABEL_NAME))
         if not label_id:
             return False
     elif not label_id:
-        for item in client.list_custom_labels(page.page_id):
+        labels = asyncio.run(client.list_custom_labels(page.page_id))
+        for item in labels:
             label_value = str(item.get("page_label_name") or item.get("name") or "").strip()
             if label_value.lower() == PENDING_REVIEW_LABEL_NAME.lower():
                 candidate = str(item.get("id") or "").strip()
@@ -1137,7 +1139,7 @@ def sync_pending_review_label(db: Session, conversation: models.Conversation, en
         if not label_id:
             return False
 
-    changed = client.associate_label(sender_id, label_id) if enabled else client.remove_label(sender_id, label_id)
+    changed = asyncio.run(client.associate_label(sender_id, label_id)) if enabled else asyncio.run(client.remove_label(sender_id, label_id))
     if changed:
         next_metadata = dict(metadata)
         label_state = dict(next_metadata.get("labels") or {})
