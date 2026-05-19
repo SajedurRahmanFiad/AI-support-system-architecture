@@ -325,7 +325,21 @@ class MessageProcessor:
                 token_usage = {}
                 reply_text = direct_product_reply["reply_text"]
             else:
+                def knowledge_search_fn(query: str) -> list[dict]:
+                    hits = knowledge.search_knowledge(
+                        self.db,
+                        self.provider,
+                        brand.id,
+                        query,
+                        ad_id=ad_id,
+                    )
+                    return [
+                        {"chunk_id": h.chunk_id, "title": h.title, "content": h.content, "score": h.score}
+                        for h in hits[:3]
+                    ]
+
                 try:
+                    tools = self.provider.get_tools() if hasattr(self.provider, 'get_tools') else None
                     decision = self.provider.generate_reply(
                         brand=brand_context,
                         customer=customer_snapshot,
@@ -333,6 +347,8 @@ class MessageProcessor:
                         incoming_text=effective_customer_text,
                         knowledge=knowledge_hits,
                         attachment_insights=attachment_insights,
+                        tools=tools,
+                        knowledge_search_fn=knowledge_search_fn,
                     )
                 except Exception as exc:
                     fallback_reply_text, fallback_sources = self._build_llm_failure_fallback_reply(knowledge_hits)

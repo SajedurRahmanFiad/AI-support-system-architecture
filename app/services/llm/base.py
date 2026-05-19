@@ -85,6 +85,12 @@ class SummaryResult:
 class LLMProvider(ABC):
     provider_name: str = "base"
 
+    def get_tools(self) -> list[dict[str, Any]]:
+        return []
+
+    def get_system_message(self) -> str:
+        return ""
+
     @abstractmethod
     def generate_reply(
         self,
@@ -94,6 +100,7 @@ class LLMProvider(ABC):
         incoming_text: str,
         knowledge: list[KnowledgeSnippet],
         attachment_insights: list[AttachmentInsight],
+        tools: list[dict[str, Any]] | None = None,
     ) -> ReplyDecision:
         raise NotImplementedError
 

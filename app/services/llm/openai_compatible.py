@@ -21,6 +21,7 @@ from app.services.llm.base import (
     SummaryResult,
 )
 from app.services.llm.runtime import LLMRuntimeConfig, resolve_llm_runtime_config
+from app.services.prompt_cache import get_knowledge_tools
 
 
 class OpenAICompatibleLLMProvider(LLMProvider):
@@ -32,6 +33,12 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         if not self.runtime.api_key:
             raise RuntimeError(f"{self.provider_name} provider requires an API key.")
 
+    def get_tools(self) -> list[dict[str, Any]]:
+        return get_knowledge_tools()
+
+    def get_system_message(self) -> str:
+        return "You are a helpful customer support assistant."
+
     def generate_reply(
         self,
         brand: BrandContext,
@@ -40,9 +47,51 @@ class OpenAICompatibleLLMProvider(LLMProvider):
         incoming_text: str,
         knowledge: list[KnowledgeSnippet],
         attachment_insights: list[AttachmentInsight],
+        tools: list[dict[str, Any]] | None = None,
+        knowledge_search_fn: Any | None = None,
     ) -> ReplyDecision:
-        prompt = self._build_reply_prompt(brand, customer, history, incoming_text, knowledge, attachment_insights)
-        response_text, usage = self._chat_text_completion(model=self.runtime.model, prompt=prompt)
+        messages = self._build_messages(
+            brand=brand,
+            customer=customer,
+            history=history,
+            incoming_text=incoming_text,
+            knowledge=knowledge,
+            attachment_insights=attachment_insights,
+        )
+
+        available_tools = tools or self.get_tools()
+
+        if available_tools and knowledge_search_fn:
+            response = self._chat_with_tools(model=self.runtime.model, messages=messages, tools=available_tools)
+            response_text = response["content"]
+            tool_calls = response.get("tool_calls")
+            usage = response.get("usage", {})
+
+            if tool_calls:
+                for tc in tool_calls:
+                    if tc.get("function", {}).get("name") == "retrieve_knowledge":
+                        try:
+                            args = json.loads(tc["function"]["arguments"])
+                            query = args.get("query", "")
+                            if query and knowledge_search_fn:
+                                fetched_knowledge = knowledge_search_fn(query)
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tc["id"],
+                                    "content": json.dumps(fetched_knowledge, ensure_ascii=True)
+                                })
+                        except Exception:
+                            pass
+
+                response2 = self._chat_with_tools(model=self.runtime.model, messages=messages, tools=None)
+                response_text = response2.get("content", response_text)
+                usage2 = response2.get("usage", {})
+                usage = {**usage, **usage2}
+        else:
+            response = self._chat_with_tools(model=self.runtime.model, messages=messages, tools=None)
+            response_text = response.get("content", "")
+            usage = response.get("usage", {})
+
         payload = self._extract_json(response_text or "")
         reply_text = self._normalize_text(payload.get("reply_text")) or brand.fallback_handoff_message
         return ReplyDecision(
@@ -56,6 +105,132 @@ class OpenAICompatibleLLMProvider(LLMProvider):
             internal_notes=self._normalize_text(payload.get("internal_notes")),
             token_usage=usage,
         )
+
+    def _build_messages(
+        self,
+        brand: BrandContext,
+        customer: CustomerSnapshot,
+        history: list[ConversationTurn],
+        incoming_text: str,
+        knowledge: list[KnowledgeSnippet],
+        attachment_insights: list[AttachmentInsight],
+    ) -> list[dict[str, Any]]:
+        system_content = self._build_system_content(brand)
+        user_content = self._build_user_content(
+            brand=brand,
+            customer=customer,
+            history=history,
+            incoming_text=incoming_text,
+            knowledge=knowledge,
+            attachment_insights=attachment_insights,
+        )
+        return [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": user_content},
+        ]
+
+    def _build_system_content(self, brand: BrandContext) -> str:
+        rules = "\n".join(
+            f"- [{r['category']}] {r['title']}: {r['content']}"
+            for r in brand.rules
+        ) or "- No extra brand rules."
+
+        return (
+            f"{brand.system_prompt or 'Use grounded, helpful sales and support behavior.'}\n\n"
+            "Operational contract: "
+            "Be accurate, concise, and human. Never invent business facts. "
+            "If the message is risky, unclear, legal, refund-related, abusive, or needs approval, choose handoff. "
+            "If you need one short follow-up question, choose clarify. "
+            "Reason carefully about message timing and sequence. Use the timestamps in the recent conversation. "
+            "Return JSON only with keys: status, reply_text, confidence, handoff_reason, customer_updates, flags, used_knowledge_ids, internal_notes.\n\n"
+            f"Brand name: {brand.name}\n"
+            f"Preferred language: {brand.default_language}\n"
+            f"Tone name: {brand.tone_name}\n"
+            f"Tone instructions: {brand.tone_instructions or 'Keep it warm, clear, and sales-aware.'}\n"
+            f"Public reply guidelines: {brand.public_reply_guidelines or 'No extra public rules.'}\n"
+            f"Brand rules:\n{rules}"
+        )
+
+    def _build_user_content(
+        self,
+        brand: BrandContext,
+        customer: CustomerSnapshot,
+        history: list[ConversationTurn],
+        incoming_text: str,
+        knowledge: list[KnowledgeSnippet],
+        attachment_insights: list[AttachmentInsight],
+    ) -> str:
+        style_examples = "\n".join(
+            f"Example {idx + 1}\nCustomer: {item['trigger_text']}\nBest reply: {item['ideal_reply']}"
+            for idx, item in enumerate(brand.style_examples[:2])
+        ) or "No style examples."
+
+        knowledge_text = "\n".join(
+            f"[Chunk {item.chunk_id} | {item.title} | score={item.score:.3f}] {item.content}"
+            for item in knowledge
+        ) or "No matching knowledge was found."
+
+        attachment_text = "\n".join(
+            f"- {item.attachment_type}: {item.summary}. Transcript: {item.transcript or 'n/a'}. "
+            f"Translated text: {item.translated_text or 'n/a'}. "
+            f"Detected language: {item.detected_language or 'n/a'}. "
+            f"Extracted text: {item.extracted_text or 'n/a'}"
+            for item in attachment_insights
+        ) or "No attachments."
+
+        customer_text = json.dumps(
+            {
+                "display_name": customer.display_name,
+                "language": customer.language,
+                "city": customer.city,
+                "summary": customer.short_summary,
+                "profile": customer.profile,
+                "facts": customer.facts,
+            },
+            ensure_ascii=True,
+        )
+
+        return (
+            f"Current system time (UTC): {datetime.now(timezone.utc).isoformat()}\n\n"
+            f"Customer snapshot: {customer_text}\n\n"
+            f"Recent conversation:\n{self._format_history(history)}\n\n"
+            f"Incoming customer message:\n{incoming_text}\n\n"
+            f"Attachment insights:\n{attachment_text}\n\n"
+            f"Style examples:\n{style_examples}\n\n"
+            f"Knowledge candidates:\n{knowledge_text}\n\n"
+            f"Language behavior: {self._language_instruction(brand.default_language, customer.language)}\n\n"
+            "Reply_text should be customer-facing. customer_updates can include display_name, language, city, and facts. "
+            "used_knowledge_ids should only contain chunk ids you actually used."
+        )
+
+    def _chat_with_tools(
+        self,
+        *,
+        model: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        response = self._post_json("/chat/completions", payload)
+        choices = response.get("choices", [])
+        if not choices:
+            return {"content": "", "usage": {}}
+
+        message = choices[0].get("message", {})
+        content = message.get("content", "")
+        tool_calls = message.get("tool_calls", [])
+
+        result = {"content": content, "usage": response.get("usage", {})}
+        if tool_calls:
+            result["tool_calls"] = tool_calls
+
+        return result
 
     def summarize_conversation(self, brand: BrandContext, history: list[ConversationTurn]) -> SummaryResult:
         prompt = (
