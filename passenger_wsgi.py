@@ -2,11 +2,13 @@ import os
 import sys
 from pathlib import Path
 
-# VERCEL="1" prevents the background daemon thread from starting in the WSGI worker, 
+# VERCEL="1" prevents the background daemon thread from starting in the WSGI worker,
 # as Passenger freezes background threads when there are no active requests.
-# PERSIST_BACKGROUND_JOB_RUNNER="1" allows `enqueue_job` to spawn a completely detached
-# subprocess that escapes Passenger's process group and processes jobs reliably.
-os.environ["VERCEL"] = "1"
+# For cPanel, we set VERCEL="" to allow background job runner to work
+# Also use PERSIST_BACKGROUND_JOB_RUNNER="1" for detached subprocess
+is_vercel = os.environ.get("VERCEL", "").strip()
+if is_vercel in {"1", "true", "yes", "on"}:
+    os.environ["VERCEL"] = ""
 os.environ["PERSIST_BACKGROUND_JOB_RUNNER"] = "1"
 
 def _resolve_repo_root() -> Path:
